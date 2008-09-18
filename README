@@ -1,0 +1,72 @@
+Audio::Ecasound::Multitrack version 0.95
+========================================
+
+Audio::Ecasound::Multitrack provides classes for tracks and
+buses, a template system for signal routing and other
+infrastructure to manage multitrack recording and mixing
+using the Ecasound audio processing engine.
+
+The distribution includes Nama, a recorder-mixer
+application with full featured command-line and
+graphic interfaces.
+
+The graphic interface is a recorder/mixer based on
+the Tk widget set. 
+
+The command-line interface executes its own commands,
+Ecasound commands, perl code, and shell commands. It
+includes history and help functions. 
+
+The name 'nama' is Japanese for 'live' and is used to
+describe live performances, raw fish, and draft beer.
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make test
+   make install
+
+DEPENDENCIES
+
+This module requires that you have installed these Perl modules:
+
+	Carp
+	Cwd
+	Storable 
+	Getopt::Std
+	Tk
+	Audio::Ecasound
+	Parse::RecDescent
+	YAML::Tiny
+	Data::YAML
+	File::Find::Rule
+	File::Spec::Link
+	IO::All
+
+These can all be installed by running the included script
+install_needed_perl_modules.sh.
+
+The Ecasound audio processing libraries must also be
+installed. Ecasound may be obtained from
+http://ecasound.seul.org/ecasound/ or as precompiled binary
+packages for your Un*x distribution.
+
+The LADSPA SDK is required to autosense LADSPA plugins and
+scaling hints.  It is available at
+http://www.ladspa.org/ladspa_sdk/download.html .  
+In particular the the utility program 'analyseplugin' 
+must be installed in a directory in your execution PATH.  
+
+'file', a BSD utility program that detects 
+file formats must be installed for Nama to correctly
+identify stereo files.
+
+COPYRIGHT AND LICENCE
+
+Copyright (C) 2007 Joel Roth
+
+This library is licensed for use under the terms of the 
+Gnu Public License version 2.
