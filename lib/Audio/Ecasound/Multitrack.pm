@@ -1,5 +1,5 @@
 package Audio::Ecasound::Multitrack;
-our $VERSION = '0.95';
+our $VERSION = '0.96';
 use 5.008;
 use strict;
 no strict qw(subs);
@@ -28,7 +28,7 @@ print <<BANNER;
     //                              ///     
    // Nama multitrack recorder //      Audio processing by Ecasound    /
   /
- /       (c) 2007 Joel Roth                      ////               //
+ /       (c) 2008 Joel Roth                      ////               //
 /////////////////////////////////////////////////////////////////////
 
 
@@ -1566,14 +1566,21 @@ sub show_unit { $time_step->configure(
 	-text => ($unit == 1 ? 'Sec' : 'Min') 
 )}
 
-# GUI routines
 sub drop_mark {
+	$debug2 and print "drop_mark()\n";
+	my $name = shift;
 	my $here = eval_iam("cs-get-position");
-	return if grep { $_->time == $here } Audio::Ecasound::Multitrack::Mark::all();
-	my $mark = Audio::Ecasound::Multitrack::Mark->new( time => $here );
+
+	print("mark exists already\n"), return 
+		if grep { $_->time == $here } Audio::Ecasound::Multitrack::Mark::all();
+
+	my $mark = Audio::Ecasound::Multitrack::Mark->new( time => $here, 
+							name => $name);
+
 		$ui->marker($mark); # for GUI
 }
 sub mark {
+	$debug2 and print "mark()\n";
 	my $mark = shift;
 	my $pos = $mark->time;
 	if ($markers_armed){ 
@@ -4552,7 +4559,8 @@ to_mark:
   example: tom start (go to mark named 'start')
 mark:
   type: mark
-  what: Mark current head position, becomes current mark
+  what: Mark current head position 
+  parameter: name (optional)
   smry: mark current position
   short: k	
   parameters: none
@@ -4894,7 +4902,8 @@ remove_mark: _remove_mark end {
 }
 	
 
-mark: _mark end { $Audio::Ecasound::Multitrack::ui->marker( Audio::Ecasound::Multitrack::mark_here() )  }
+mark: _mark name end { Audio::Ecasound::Multitrack::drop_mark $item{name}  }
+mark: _mark end {  Audio::Ecasound::Multitrack::drop_mark()  }
 
 next_mark: _next_mark end { Audio::Ecasound::Multitrack::next_mark() }
 

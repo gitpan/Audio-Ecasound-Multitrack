@@ -3,6 +3,8 @@
 package Audio::Ecasound::Multitrack::Mark;
 our $VERSION = 1.0;
 use Carp;
+use warnings;
+no warnings qw(uninitialized);
 our @ISA;
 use vars qw($n %by_name @all  %used_names);
 use Audio::Ecasound::Multitrack::Object qw( 
