@@ -1,19 +1,4 @@
 #!/usr/bin/env perl
-use 5.008;
-BEGIN{ 
-our $VERSION = '0.97';
-print <<BANNER;
-
-     /////////////////////////////////////////////////////////////////////
-    //                                        / /   /     ///           /
-   // Nama multitrack recorder v. $VERSION                                 /
-  /                                    Audio processing by Ecasound 
- /       (c) 2008 Joel Roth                      ////               //
-/////////////////////////////////////////////////////////////////////
-
-
-BANNER
-}
 use Audio::Ecasound::Multitrack;
 Audio::Ecasound::Multitrack::mainloop();
 

@@ -1,9 +1,32 @@
 package Audio::Ecasound::Multitrack;
+use 5.008;
 use strict;
 no strict qw(subs);
 use warnings;
 no warnings qw(uninitialized);
 no warnings;
+
+
+BEGIN{ 
+
+our $VERSION = '0.97.1';
+
+print <<BANNER;
+
+     /////////////////////////////////////////////////////////////////////
+    //                                        / /   /     ///           /
+   // Nama multitrack recorder v. $VERSION                                 /
+  /                                    Audio processing by Ecasound 
+ /       (c) 2008 Joel Roth                      ////               //
+/////////////////////////////////////////////////////////////////////
+
+
+BANNER
+
+
+}
+
+
 use Carp;
 use Cwd;
 use Tk;

@@ -27,4 +27,4 @@ requires:
   Term::ReadLine: 0
   Tk: 0
   perl: 5.8.0
-version: 0.97
+version: 0.97.1
