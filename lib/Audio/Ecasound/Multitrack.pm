@@ -1,6 +1,4 @@
 package Audio::Ecasound::Multitrack;
-our $VERSION = '0.96';
-use 5.008;
 use strict;
 no strict qw(subs);
 use warnings;
@@ -14,25 +12,13 @@ use Getopt::Std;
 use Audio::Ecasound;
 use Parse::RecDescent;
 use Term::ReadLine;
-use Data::YAML::Writer;
-use Data::YAML::Reader;
+use Data::YAML;
 use File::Find::Rule;
 use File::Spec::Link;
 use IO::All;
 
 ## Definitions ##
 
-print <<BANNER;
-
-     /////////////////////////////////////////////////////////////////////
-    //                              ///     
-   // Nama multitrack recorder //      Audio processing by Ecasound    /
-  /
- /       (c) 2008 Joel Roth                      ////               //
-/////////////////////////////////////////////////////////////////////
-
-
-BANNER
 
 # 'our' declaration: all packages in the file will see the following
 # variables. 
@@ -5495,12 +5481,3 @@ B<Nama> - Multitrack recorder and mixer application
 
 Type I<man nama> for details on usage and licensing.
 
-=head1 ABSTRACT
-
-These libraries supplement the broad abilities of Ecasound
-with concepts of track and bus, mixer configuration, and
-default signal routing. The B<Nama> user application aims to provide
-a comfortable environment for multitrack recording.  Text
-and Tk GUI interfaces are provided. Configuration data and
-project settings are stored in easily legible YAML formatted
-files. 

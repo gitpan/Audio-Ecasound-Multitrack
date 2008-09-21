@@ -1,13 +1,30 @@
---- #YAML:1.0
-name:                Audio-Ecasound-Multitrack
-version:             0.96
-abstract:            ~
-license:             ~
-author:              
-    - Joel Roth <jroth@joelz@pobox.com>
-generated_by:        ExtUtils::MakeMaker version 6.42
-distribution_type:   module
-requires:     
+---
+abstract: ~
+author:
+  - 'Joel Roth, <joelz@pobox.com>'
+distribution_type: module
+generated_by: 'Module::Install version 0.77'
+license: gpl
 meta-spec:
-    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
-    version: 1.3
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
+name: Audio-Ecasound-Multitrack
+no_index:
+  directory:
+    - inc
+    - t
+requires:
+  Audio::Ecasound: 0
+  Carp: 0
+  Cwd: 0
+  Data::YAML: 0
+  File::Find::Rule: 0
+  File::Spec::Link: 0
+  Getopt::Std: 0
+  IO::All: 0
+  Parse::RecDescent: 0
+  Storable: 0
+  Term::ReadLine: 0
+  Tk: 0
+  perl: 5.8.0
+version: 0.97
