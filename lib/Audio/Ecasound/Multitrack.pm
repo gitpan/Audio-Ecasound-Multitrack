@@ -9,7 +9,7 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.97.1';
+our $VERSION = '0.972';
 
 print <<BANNER;
 

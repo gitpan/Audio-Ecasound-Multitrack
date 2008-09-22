@@ -5,7 +5,7 @@ Audio::Ecasound::Multitrack::mainloop();
 __END__
 =head1 NAME
 
-B<Audio::Multitrack> - Perl extensions for multitrack audio processing
+B<Audio::Ecasound::Multitrack> - Perl extensions for multitrack audio processing
 
 B<nama> - Multitrack recording/mixing application
 
