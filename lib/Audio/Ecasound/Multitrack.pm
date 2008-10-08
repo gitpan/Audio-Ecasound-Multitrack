@@ -9,13 +9,13 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.972';
+our $VERSION = '0.973';
 
 print <<BANNER;
 
      /////////////////////////////////////////////////////////////////////
     //                                        / /   /     ///           /
-   // Nama multitrack recorder v. $VERSION                                 /
+   // Nama multitrack recorder v. $VERSION                                /
   /                                    Audio processing by Ecasound 
  /       (c) 2008 Joel Roth                      ////               //
 /////////////////////////////////////////////////////////////////////
@@ -565,12 +565,13 @@ sub prepare {
 	
 
 	$debug2 and print "&prepare\n";
-	local $debug = 0;
 	
 
 	$ecasound  = $ENV{ECASOUND} ? $ENV{ECASOUND} : q(ecasound);
 	$e = Audio::Ecasound->new();
 	#new_engine();
+	
+	$debug and print "started Ecasound\n";
 
 	### Option Processing ###
 	# push @ARGV, qw( -e  );
@@ -594,6 +595,7 @@ sub prepare {
 
 	read_config();  # from .namarc if we have one
 
+	$debug and print "reading config file\n";
 	$project_root = $opts{d} if $opts{d}; # priority to command line option
 
 	$project_root or $project_root = join_path($ENV{HOME}, "nama" );
@@ -799,7 +801,7 @@ sub initialize_rules {
 
 	$mixer_out = Audio::Ecasound::Multitrack::Rule->new( #  this is the master output
 		name			=> 'mixer_out', 
-		chain_id		=> 'MixerOut', 
+		chain_id		=> 1, # MixerOut
 
 		target			=> 'MON',
 
@@ -819,7 +821,7 @@ sub initialize_rules {
 	$mix_down = Audio::Ecasound::Multitrack::Rule->new(
 
 		name			=> 'mix_file', 
-		chain_id		=> 'MixDown',
+		chain_id		=> 2, # MixDown
 		target			=> 'REC', 
 		
 		# sub{ defined $outputs{mixed} or $debug 
@@ -845,7 +847,8 @@ sub initialize_rules {
 	$mix_link = Audio::Ecasound::Multitrack::Rule->new(
 
 		name			=>  'mix_link',
-		chain_id		=>  sub{ my $track = shift; $track->n },
+		chain_id		=>  'MixLink',
+		#chain_id		=>  sub{ my $track = shift; $track->n },
 		target			=>  'all',
 		condition =>	sub{ defined $inputs{mixed}->{$loopb} },
 		input_type		=>  'mixed',
@@ -1017,37 +1020,19 @@ sub eliminate_loops {
 
 	# remove loopb when only one customer for  $inputs{mixed}{loop,222}
 	
-	
 	my $ref = ref $inputs{mixed}{$loopb};
-	#print "ref: $ref\n";
 
 	if (    $ref =~ /ARRAY/ and 
 			(scalar @{$inputs{mixed}{$loopb}} == 1) ){
 
 		$debug and print "i have a loop to eliminate \n";
+		my $customer_id = ${$inputs{mixed}{$loopb}}[0];
+		$debug and print "customer chain: $customer_id\n";
 
-		# The output device we assume will be chains MixerOut or
-		# MixDown
-
-		$ref = ref  $outputs{device}{$mixer_out_device} ;
-
-		 if ( $ref =~ /ARRAY/ ){
-	#	 	print "found array\n";
-			map{ s/MixerOut/1/ } @{ $outputs{device}{$mixer_out_device} };
-		}
 		delete $outputs{mixed}{$loopb};
 		delete $inputs{mixed}{$loopb};
 
-		$ref = ref  $outputs{file};
-		if ( $ref =~ /HASH/ ){
-
-			my @keys = 	keys %{ $outputs{file} } ;
-			map{ $ref = ref $outputs{file}{$_};
-				  $ref =~ /ARRAY/
-					and scalar @{ $outputs{file}{$_}  }
-					and map{s/MixDown/1/  } @{ $outputs{file}{$_} }
-					} @keys;
-		}
+	$inputs{mixed}{$loopa} = [ $customer_id ];
 
 	}
 	
@@ -1748,9 +1733,14 @@ sub remove_effect {
 		
 	$debug and print "ready to remove cop_id: $id\n";
 
-	# if i belong to someone remove their ownership of me
+	my $parent = $cops{$id}->{belongs_to} ;
 
-	if ( my $parent = $cops{$id}->{belongs_to} ) {
+	if ( $parent ) {
+
+	# if i belong to someone, i am a controller.
+	#
+	# i remove their ownership of me
+
 	$debug and print "parent $parent owns list: ", join " ",
 		@{ $cops{$parent}->{owns} }, "\n";
 
@@ -1763,13 +1753,14 @@ sub remove_effect {
 	# recursively remove children
 	$debug and print "children found: ", join "|",@{$cops{$id}->{owns}},"\n";
 		
-	# parameter controllers are not separate ops
 	map{remove_effect($_)}@{ $cops{$id}->{owns} };
 
 	
-	# remove my own cop_id from the stack
-	$ui->remove_effect_gui($id), remove_op($id)  unless $cops{$id}->{belongs_to};
-	
+	$ui->remove_effect_gui($id);
+
+    	
+	if ($parent) { remove_ctrl $id }
+	else {remove_op $id}
 			
 }
 sub remove_effect_gui { 
@@ -1800,21 +1791,46 @@ sub remove_op {
 
 	my $id = shift;
 	my $n = $cops{$id}->{chain};
-	if ( $cops{$id}->{belongs_to}) { 
-		return;
-	}
+	my $index = effect_index $id;
+	$debug and print "ops list for chain $n: @{$ti[$n]->ops}\n";
+	$debug and print "operator id to remove: $id\n";
+	$debug and print "ready to remove from chain $n, operator id $id, index $index\n";
+		$debug and eval_iam ("cs");
+		 eval_iam ("c-select $n");
+		eval_iam ("cop-select ". ($ti[$n]->offset + $index));
+		eval_iam ("cop-remove");
+		$debug and eval_iam ("cs");
+
+	eval_iam qq(c-select $n);
+	eval_iam ("ctrl-remove " . ctrl_index($id) );
+
+	delete $cops{$id};
+	delete $copp{$id};
+}
+
+sub remove_ctrl {
+
+	my $id = shift;
+	my $n = $cops{$id}->{chain};
 	my $index = effect_index $id;
 	$debug and print "ops list for chain $n: @{$ti[$n]->ops}\n";
 	$debug and print "operator id to remove: $id\n";
 	$debug and print "ready to remove from chain $n, operator id $id, index $index\n";
 	$debug and eval_iam ("cs");
-	 eval_iam ("c-select $n");
-	eval_iam ("cop-select ". ($ti[$n]->offset + $index));
-	eval_iam ("cop-remove");
-	$debug and eval_iam ("cs");
+	eval_iam qq(c-select $n);
+	eval_iam ("ctrl-remove " . ctrl_index($n, $id) );
 
 	delete $cops{$id};
 	delete $copp{$id};
+}
+
+sub ctrl_index { 
+	my ($chain, $id) = @_;
+	my $i = 0;
+	map{ ++$i if $cops{$_}->{belongs_to}  ;
+	     return $i if $_ eq $id;
+	} @{ $ti[$chain]->ops }
+
 }
 sub cop_add {
 	my %p 			= %{shift()};
@@ -4197,6 +4213,10 @@ sub help {
 	my $name = shift;
 	chomp $name;
 	#print "seeking help for argument: $name\n";
+	$iam_cmd{$name} and print <<IAM;
+
+$name is an Ecasound command.  See 'man ecasound-iam'.
+IAM
 	$help_topic{$name} and helptopic($name), return;
 	$name == 10 and (map{ helptopic $_ } @help_topic), return;
 	$name =~ /^\d+$/ and helptopic($name), return;
@@ -4204,7 +4224,9 @@ sub help {
 	$commands{$name} and helpline($name), return;
 	my %helped = (); 
 	map{  my $cmd = $_ ;
-		helpline($cmd) and $helped{$cmd}++ if $cmd =~ /$name/;
+		
+		helpline($cmd), $helped{$cmd}++ if $cmd =~ /$name/;
+
 		  # print ("commands short: ", $commands{$cmd}->{short}, $/),
 	      helpline($cmd) 
 		  	if grep { /$name/ } split " ", $commands{$cmd}->{short} 
@@ -4663,6 +4685,7 @@ value: /[\d\.eE+-]+/
 last: ('last' | '$' ) 
 dd: /\d+/
 name: /[\w:]+/
+name2: /[\w-]+/
 modifier: 'audioloop' | 'select' | 'reverse' | 'playat' | value
 nomodifiers: _nomodifiers end { $Audio::Ecasound::Multitrack::this_track->set(modifiers => ""); }
 asdf: 'asdf' { print "hello"}
@@ -4670,7 +4693,7 @@ command: fail
 end: /\s*$/ 
 end: ';' 
 help: _help end { print $Audio::Ecasound::Multitrack::help_screen }
-help: _help name end { Audio::Ecasound::Multitrack::Text::help($item{name}) }
+help: _help name2  { Audio::Ecasound::Multitrack::Text::help($item{name2}) }
 
 
 
