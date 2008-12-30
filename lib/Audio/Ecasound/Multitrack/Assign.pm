@@ -310,7 +310,8 @@ sub create_dir {
 	my @dirs = @_;
 	map{ my $dir = $_;
 	$debug and print "creating [ $dir ]\n";
-		-e $dir and (carp "create_dir: '$dir' already exists, skipping...\n") 
+		-e $dir 
+#and (carp "create_dir: '$dir' already exists, skipping...\n") 
 			or system qq( mkdir -p $dir)
 		} @dirs;
 }
@@ -320,7 +321,7 @@ sub join_path {
 	my @parts = @_;
 	my $path = join '/', @parts;
 	$path =~ s(/{2,})(/)g;
-	$debug and print "path: $path\n";
+	#$debug and print "path: $path\n";
 	$path;
 }
 

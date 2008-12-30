@@ -246,8 +246,8 @@ sub monitor_version {
 	elsif (	$group->version
 			and grep {$group->version  == $_ } @{$track->versions})
 		{ $version = $group->version }
-	elsif (	$track->last) #  and ! $track->active and ! $group->version )
-		{ $version = $track->last }
+#	elsif (	$track->last) #  and ! $track->active and ! $group->version )
+#		{ $version = $track->last }
 	else { } # carp "no version to monitor!\n" 
 	# print "monitor version: $version\n";
 	$version;
@@ -455,5 +455,10 @@ use Audio::Ecasound::Multitrack::Object qw(	op_id
 
 
 1;
+
+# We will treat operators and controllers both as Op
+# objects. Subclassing so controller has special
+# add_op  and remove_op functions. 
+# 
 
 __END__

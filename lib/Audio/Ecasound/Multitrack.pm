@@ -1,7 +1,8 @@
 package Audio::Ecasound::Multitrack;
 use 5.008;
 use strict;
-no strict qw(subs);
+use strict qw(refs);
+use strict qw(subs);
 use warnings;
 no warnings qw(uninitialized);
 no warnings;
@@ -9,7 +10,7 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.973';
+our $VERSION = '0.975';
 
 print <<BANNER;
 
@@ -29,7 +30,6 @@ BANNER
 
 use Carp;
 use Cwd;
-use Tk;
 use Storable; 
 use Getopt::Std;
 use Audio::Ecasound;
@@ -325,14 +325,14 @@ our (
 					# ->cancel method not reliable
 					# for 'repeat' events, so converted to
 					# 'after' events
-	%event_id,    # events will store themselves with a unique key they provide
-	# $event_id{loop} = $loop_event, # Tk events for
-	$new_event,   # the Tk widget
+	%event_id,    # events will store themselves with a key
+	$set_event,   # the Tk dummy widget used to set events
 	$this_mark,    # current mark
 	@loop_endpoints, # they define the loop
 	$loop_enable, # whether we automatically loop
 
    $previous_text_command, # i want to know if i'm repeating
+	$term, 			# Term::ReadLine object
 );
  
 
@@ -540,6 +540,7 @@ HELLO
 		$reply = lc $reply;
 		if ($reply !~ /n/i) {
 			create_dir( $project_root);
+			create_dir( join_path $project_root, "untitled");
 			print "\n... Done!\n\n";
 		} 
 	}
@@ -587,6 +588,15 @@ sub prepare {
 	# m: don't load state info on initial startup
 	# e: don't load static effects data
 	# s: don't load static effects data cache
+	if ($opts{t}) {
+		require Time::HiRes;
+		import  Time::HiRes;
+		require Event;
+		import  Event;
+	} else {
+		require Tk;
+		import Tk;
+	}
 	$project_name = shift @ARGV;
 	$debug and print "project name: $project_name\n";
 
@@ -636,18 +646,20 @@ sub prepare {
 	$ui = $opts{t} ? Audio::Ecasound::Multitrack::Text->new 
 				   : Audio::Ecasound::Multitrack::Graphical->new ;
 
-	# default to graphic mode with events
-	# with full text mode as well
-
-	# Tk main window
- 	$mw = MainWindow->new;  
-	$new_event = $mw->Label();
+	# default to graphic mode  (Tk events and event loop)
+	# text mode (Event event loop)
+	
 
 	$ui->init_gui;
 	$ui->transport_gui;
 	$ui->time_gui;
 
 	print "project_name: $project_name\n";
+	if (! $project_name ){
+		$project_name = "untitled";
+		$opts{c}++; 
+	}
+	
 	load_project( name => $project_name, create => $opts{c}) 
 	  if $project_name;
 
@@ -675,6 +687,17 @@ sub eval_iam {
 	$e->errmsg('');
 	$result;
 }
+sub colonize { # convert seconds to hours:minutes:seconds 
+	my $sec = shift;
+	my $hours = int ($sec / 3600);
+	$sec = $sec % 3600;
+	my $min = int ($sec / 60);
+	$sec = $sec % 60;
+	$sec = "0$sec" if $sec < 10;
+	$min = "0$min" if $min < 10 and $hours;
+	($hours ? "$hours:" : "") . qq($min:$sec);
+}
+
 ## configuration file
 
 sub project_root { File::Spec::Link->resolve_all($project_root)};
@@ -749,13 +772,18 @@ sub substitute{
 }
 ## project handling
 
+sub list_projects {
+	my $cmd = "ls ". project_root();
+	print system $cmd;
+}
+		
 sub load_project {
 	local $debug = 0;
 	#carp "load project: I'm being called from somewhere!\n";
 	my %h = @_;
 	$debug2 and print "&load_project\n";
 	$debug and print yaml_out \%h;
-	# return unless $h{name} or $project;
+	print ("no project name.. doing nothing.\n"),return unless $h{name} or $project;
 
 	# we could be called from Tk with variable $project _or_
 	# called with a hash with 'name' and 'create' fields.
@@ -765,7 +793,7 @@ sub load_project {
 	$project_name = $project if $project;
 	$debug and print "project name: $project_name create: $h{create}\n";
 	$project_name and $h{create} and 
-		print ("Creating directories....\n"),
+		#print ("Creating directories....\n"),
 		map{create_dir($_)} &project_dir, &this_wav_dir ;
 	read_config( global_config() ); 
 	initialize_rules();
@@ -775,6 +803,7 @@ sub load_project {
 	retrieve_state( $h{settings} ? $h{settings} : $state_store_file) unless $opts{m} ;
 	$opts{m} = 0; # enable 
 	
+	#print "Track_by_index: ", $#Audio::Ecasound::Multitrack::Track::by_index, $/;
 	dig_ruins() unless $#Audio::Ecasound::Multitrack::Track::by_index > 2;
 
 
@@ -784,8 +813,9 @@ sub load_project {
 	$ui->refresh_group;
 	generate_setup() and connect_transport();
 
-#The mix track will always be track index 1 i.e. $ti[$n]
-# for $n = 1, And take index 1.
+#The mixed signal is always output at track index 1 i.e. 
+# The corresponding object is found by $ti[$n]
+# for $n = 1. 
  1;
 
 }
@@ -1466,32 +1496,42 @@ sub transport_status {
 sub start_transport { 
 	$debug2 and print "&start_transport\n";
 	carp("Invalid chain setup, aborting start.\n"),return unless eval_iam("cs-is-valid");
-	#
-	# we are going to have a heartbeat function.
-	# It will wakeup every three seconds
-	# will do several jobs, one is to calculate
-	# the time till the replay, then if that
-	# time is less than 6s, the wraparound will be
-	# scheduled.
-	#
-	# if the stop button is pressed, we cancel
-	#
-	#
-	#carp "transport appears stuck: ",eval_iam("engine-status"),$/;
-	#if twice (or 3x in a row) not running status, 
 
 	print "starting at ", colonize(int (eval_iam "getpos")), $/;
+	schedule_wraparound();
 	eval_iam('start');
 	sleep 1;
 	$ui->start_heartbeat();
-	#start_heartbeat();
 
 	sleep 1; # time for engine
 	print "engine is ", eval_iam("engine-status"), $/;
 }
+sub heartbeat {
+			#	print "heartbeat fired\n";
+		
+				my $here   = eval_iam("getpos");
+				my $status = eval_iam q(engine-status);
+				$ui->stop_heartbeat
+					#if $status =~ /finished|error|stopped/;
+					if $status =~ /finished|error/;
+				print join " ", $status, colonize($here), $/;
+				my ($start, $end);
+				$start  = Audio::Ecasound::Multitrack::Mark::loop_start();
+				$end    = Audio::Ecasound::Multitrack::Mark::loop_end();
+				$ui->schedule_wraparound() 
+					if $loop_enable 
+					and defined $start 
+					and defined $end 
+					and ! really_recording();
 
+				# update time display
+				#
+				$ui->clock_config(-text => colonize(eval_iam('cs-get-position')));
+
+}
 
 sub schedule_wraparound {
+	#local $debug = 1;
 	my $here   = eval_iam("getpos");
 	my $start  = Audio::Ecasound::Multitrack::Mark::loop_start();
 	my $end    = Audio::Ecasound::Multitrack::Mark::loop_end();
@@ -1499,42 +1539,17 @@ sub schedule_wraparound {
 	$debug and print "here: $here, start: $start, end: $end, diff: $diff\n";
 	if ( $diff < 0 ){ # go at once
 		eval_iam("setpos ".$start);
-	} elsif ( $diff < 6 ) { #schedule the move
-	$event_id{wraparound} = $new_event->after( 
-		int( $diff*1000 ), sub{ eval_iam("setpos " . $start) } )
-		
-		unless $event_id{wraparound};
+		$ui->cancel_wraparound();
+	} elsif ( $diff < 3 ) { #schedule the move
+	$ui->wraparound($diff, $start);
 		
 		;
 	}
 }
 
-	
-sub prepare_looping {
-	# print "looping enabled\n";
-	my $here   = eval_iam q(getpos), 
-	my $end    = Audio::Ecasound::Multitrack::Mark::loop_end();
-	my $start  = Audio::Ecasound::Multitrack::Mark::loop_start();
-	my $diff = $end - $here;
-	$debug and print "here: $here, start: $start, end: $end, diff: $diff\n";
-	if ( $diff < 0 ){
-		eval_iam("setpos ".$start);
-		sleep 1;
-		prepare_looping();
-	} else {
-		$event_id{loop} =  $new_event->after(
-			int($diff * 1000), sub {
-				eval_iam("setpos ".$start) ;
-				sleep 1;
-				prepare_looping();
-			}
-		);
-	}
-		#   will need to cancel on transport stop
-}
 sub stop_transport { 
 	$debug2 and print "&stop_transport\n"; 
-	map{ $new_event->afterCancel($event_id{$_})} qw(heartbeat wraparound);
+	$ui->stop_heartbeat();
 	eval_iam('stop');	
 	print "engine is ", eval_iam("engine-status"), $/;
 	$ui->project_label_configure(-background => $old_bg);
@@ -1729,16 +1744,22 @@ sub remove_effect {
 	my $id = shift;
 	return unless $cops{$id};
 	my $n = $cops{$id}->{chain};
-	$ti[$n]->remove_effect( $id );
 		
-	$debug and print "ready to remove cop_id: $id\n";
+	$debug and print "ready to remove chain operator _ $id _ from track _ $n _\n";
+	$ui->remove_effect_gui($id);
+	remove_op($id);
+	delete $cops{$id};
+	delete $copp{$id};
+	$ti[$n]->remove_effect( $id );
 
+## following code for controllers comment out
+=comment
 	my $parent = $cops{$id}->{belongs_to} ;
 
 	if ( $parent ) {
 
 	# if i belong to someone, i am a controller.
-	#
+	
 	# i remove their ownership of me
 
 	$debug and print "parent $parent owns list: ", join " ",
@@ -1755,12 +1776,11 @@ sub remove_effect {
 		
 	map{remove_effect($_)}@{ $cops{$id}->{owns} };
 
-	
-	$ui->remove_effect_gui($id);
-
     	
 	if ($parent) { remove_ctrl $id }
-	else {remove_op $id}
+	else {remove_op($id)}
+=cut
+
 			
 }
 sub remove_effect_gui { 
@@ -1770,8 +1790,6 @@ sub remove_effect_gui {
 	my $n = $cops{$id}->{chain};
 	$debug and print "id: $id, chain: $n\n";
 
-	$ti[$n]->set(ops =>  
-		[ grep{ $_ ne $id} @{ $ti[ $cops{$id}->{chain} ]->ops } ]);
 	$debug and print "i have widgets for these ids: ", join " ",keys %effects_widget, "\n";
 	$debug and print "preparing to destroy: $id\n";
 	$effects_widget{$id}->destroy();
@@ -1783,29 +1801,29 @@ sub remove_effect_gui {
 sub effect_index {
 	my $id = shift;
 	my $n = $cops{$id}->{chain};
+	$debug and print "id: $id n: $n \n",join $/,@{ $ti[$n]->ops }, $/;
 		for my $pos ( 0.. scalar @{ $ti[$n]->ops } - 1  ) {
-			return $pos if $ti[$n]->ops->[$pos] eq $id; 
+			return $pos + 1 if $ti[$n]->ops->[$pos] eq $id; 
 		};
 }
 sub remove_op {
 
 	my $id = shift;
 	my $n = $cops{$id}->{chain};
-	my $index = effect_index $id;
+	my $index = effect_index( $id );
 	$debug and print "ops list for chain $n: @{$ti[$n]->ops}\n";
 	$debug and print "operator id to remove: $id\n";
 	$debug and print "ready to remove from chain $n, operator id $id, index $index\n";
 		$debug and eval_iam ("cs");
-		 eval_iam ("c-select $n");
+		my $cmd = "c-select $n";
+		#print "cmd: $cmd$/";
+		eval_iam ($cmd);
+		# print "selected chain: ", eval_iam("c-selected"), $/; # Ecasound bug
 		eval_iam ("cop-select ". ($ti[$n]->offset + $index));
+		#print "selected operator: ", eval_iam("cop-selected"), $/;
 		eval_iam ("cop-remove");
 		$debug and eval_iam ("cs");
 
-	eval_iam qq(c-select $n);
-	eval_iam ("ctrl-remove " . ctrl_index($id) );
-
-	delete $cops{$id};
-	delete $copp{$id};
 }
 
 sub remove_ctrl {
@@ -2571,10 +2589,10 @@ sub retrieve_state {
 	my $yamlfile = $file;
 	$yamlfile .= ".yml" unless $yamlfile =~ /yml$/;
 	$file = $yamlfile if -f $yamlfile;
-	! -f $file and print ("file not found: $file\n"), return;
-	$debug and print "using file: $file";
+	! -f $file and (print "file not found: $file\n"), return;
+	$debug and print "using file: $file\n";
 
-	assign_var( $file, @persistent_vars );
+	assign_var($file, @persistent_vars );
 
 	##  print yaml_out \@groups_data; 
 	# %cops: correct 'owns' null (from YAML) to empty array []
@@ -2958,8 +2976,9 @@ sub init_gui {
 
 ### 	Tk root window layout
 
-
-	#my $mw = tkinit();
+	# Tk main window
+ 	$mw = MainWindow->new;  
+	$set_event = $mw->Label();
 	$mw->optionAdd('*font', 'Helvetica 12');
 	$mw->title("Ecasound/Nama"); 
 	$mw->deiconify;
@@ -3299,8 +3318,8 @@ sub flash_ready {
 
 	$debug and print "flash color: $color\n";
 	length_display(-background => $color);
-	$clock_id->cancel if (ref $clock_id) =~ /Tk/;
-	$clock_id = $clock->after(3000, 
+	$event_id{tk_flash_ready}->cancel() if defined $event_id{tk_flash_ready};
+	$event_id{tk_flash_ready} = $set_event->after(3000, 
 		sub{ length_display(-background => $old_bg) }
 	);
 }
@@ -3813,46 +3832,28 @@ sub destroy_marker {
 	my $pos = shift;
 	$mark_widget{$pos}->destroy; 
 }
-sub colonize { # convert seconds to minutes:seconds 
-	my $sec = shift;
-	my $hours = int ($sec / 3600);
-	$sec = $sec % 3600;
-	my $min = int ($sec / 60);
-	$sec = $sec % 60;
-	$sec = "0$sec" if $sec < 10;
-	$min = "0$min" if $min < 10 and $hours;
-	($hours ? "$hours:" : "") . qq($min:$sec);
-}
 
+sub wraparound {
+	@_ = Audio::Ecasound::Multitrack::discard_object @_;
+	my ($diff, $start) = @_;
+	cancel_wraparound();
+	$event_id{tk_wraparound} = $set_event->after( 
+		int( $diff*1000 ), sub{ eval_iam("setpos " . $start) } )
+}
+sub cancel_wraparound { tk_event_cancel("tk_wraparound") }
 
 sub start_heartbeat {
-	#print "event widget: ", ref $new_event, $/;
-	$event_id{heartbeat} = $new_event->repeat( 
-		3000, sub { 
-		
-				my $here   = eval_iam("getpos");
-				my $status = eval_iam q(engine-status);
-				$new_event->afterCancel($event_id{heartbeat})
-					#if $status =~ /finished|error|stopped/;
-					if $status =~ /finished|error/;
-				print join " ", "engine is $status", colonize($here), $/;
-				my ($start, $end);
-				$start  = Audio::Ecasound::Multitrack::Mark::loop_start();
-				$end    = Audio::Ecasound::Multitrack::Mark::loop_end();
-				schedule_wraparound() 
-					if $loop_enable 
-					and defined $start 
-					and defined $end 
-					and !  really_recording();
+	#print ref $set_event; 
+	$event_id{tk_heartbeat} = $set_event->repeat( 
+		3000, \&Audio::Ecasound::Multitrack::heartbeat);
+		# 3000, *Audio::Ecasound::Multitrack::heartbeat{SUB}); # equivalent to above
+}
+sub stop_heartbeat { tk_event_cancel( qw(tk_heartbeat tk_wraparound)) }
 
-				# update time display
-				#
-				$ui->clock_config(-text => colonize(eval_iam('cs-get-position')));
-
-
-
-		});
-
+sub tk_event_cancel {
+	@_ = Audio::Ecasound::Multitrack::discard_object @_;
+	map{ (ref $event_id{$_}) =~ /Tk/ and $set_event->afterCancel($event_id{$_}) 
+	} @_;
 }
 
 ### end
@@ -3981,8 +3982,6 @@ use Audio::Ecasound::Multitrack::Track;
 
 package Audio::Ecasound::Multitrack::Graphical;  ## gui routines
 our @ISA = 'Audio::Ecasound::Multitrack';
-#use Tk;
-#use Audio::Ecasound::Multitrack::Assign qw(:all);
 
 ## The following methods belong to the Graphical interface class
 
@@ -3991,7 +3990,7 @@ sub new { my $class = shift; return bless {@_}, $class }
 sub loop {
     package Audio::Ecasound::Multitrack;
     #MainLoop;
-    my $term = new Term::ReadLine 'Nama';
+    my $term = new Term::ReadLine 'Ecaound/Nama';
 	$term->tkRunning(1);
     my $prompt = "Enter command: ";
     $OUT = $term->OUT || \*STDOUT;
@@ -4016,8 +4015,6 @@ sub hello {"hello world!";}
 # because object and procedural access get
 # different parameter lists ($self being included);
 
-sub start_heartbeat {}
-sub start_clock {}
 sub init_gui {}
 sub transport_gui {}
 sub group_gui {}
@@ -4071,93 +4068,138 @@ sub show_effects {
 sub show_modifiers {
 	print "Modifiers: ",$this_track->modifiers, $/;
 }
-sub loop {
-    package Audio::Ecasound::Multitrack;
-    #load_project(name => $project_name, create => $opts{c}) if $project_name;
-    my $term = new Term::ReadLine 'Nama';
-	
-# 	No TK events in text-only mode
 
-	# $mw->iconify;         
-	# $term->tkRunning(1);
-	
-    my $prompt = "Enter command: ";
-    $OUT = $term->OUT || \*STDOUT;
-	while (1) {
-    my ($user_input) = $term->readline($prompt) ;
-	next if $user_input =~ /^\s*$/;
-	#print "previous: '$previous_text_command' current: '$user_input'\n";
+
+sub loop {
+
+	# first setup Term::Readline::GNU
+
+	# we are using Event's handlers and event loop
+
+	package Audio::Ecasound::Multitrack;
+	my $prompt = "Enter command: ";
+	$term = new Term::ReadLine("Ecasound/Nama");
+	my $attribs = $term->Attribs;
+	$term->callback_handler_install($prompt, \&Audio::Ecasound::Multitrack::Text::process_line);
+
+	# store output buffer in a scalar (for print)
+	my $outstream=$attribs->{'outstream'};
+
+	# install STDIN handler
+	$event_id{stdin} = Event->io(
+		desc   => 'STDIN handler',           # description;
+		fd     => \*STDIN,                   # handle;
+		poll   => 'r',	                   # watch for incoming chars
+		cb     => sub{ &{$attribs->{'callback_read_char'}}() }, # callback;
+		repeat => 1,                         # keep alive after event;
+	 );
+
+	$event_id{Event_heartbeat} = Event->timer(
+		parked => 1, 						# start it later
+	    desc   => 'heartbeat',               # description;
+	    prio   => 5,                         # low priority;
+		interval => 3,
+	    cb     => \&Audio::Ecasound::Multitrack::heartbeat,               # callback;
+	);
+	Event::loop();
+
+}
+sub wraparound {
+	@_ = Audio::Ecasound::Multitrack::discard_object @_;
+	my ($diff, $start) = @_;
+	#print "diff: $diff, start: $start\n";
+	$event_id{Event_wraparound}->cancel()
+		if defined $event_id{Event_wraparound};
+	$event_id{Event_wraparound} = Event->timer(
+	desc   => 'wraparound',               # description;
+	after  => $diff,
+	cb     => sub{ Audio::Ecasound::Multitrack::eval_iam("setpos " . $start) }, # callback;
+   );
+
+}
+
+
+sub start_heartbeat {$event_id{Event_heartbeat}->start() }
+
+sub stop_heartbeat {$event_id{Event_heartbeat}->stop() }
+
+sub cancel_wraparound {
+	$event_id{Event_wraparound}->cancel() if defined $event_id{Event_wraparound}
+}
+
+sub process_line {
+  $debug2 and print "&process_line\n";
+  my ($user_input) = @_;
+  $debug and print "user input: $user_input\n";
+
+  if (defined $user_input and $user_input !~ /^\s*$/)
+    {
     $term->addhistory($user_input) 
 	 	unless $user_input eq $previous_text_command;
  	$previous_text_command = $user_input;
-	Audio::Ecasound::Multitrack::Text::command_process( $user_input );
-	#print "here we are\n";
- #    use Audio::Ecasound::Multitrack::Text::OuterShell; # not needed, class is present in this file
-#      my $shell = Audio::Ecasound::Multitrack::Text::OuterShell->new;
-
-          # $shell->cmdloop;
-	}
+	command_process( $user_input );
+    }
 }
 
-    
+
 sub command_process {
 
-package Audio::Ecasound::Multitrack;
-        my ($user_input) = shift;
-        return if $user_input =~ /^\s*$/;
-        $debug and print "user input: $user_input\n";
+	package Audio::Ecasound::Multitrack;
+	my ($user_input) = shift;
+	return if $user_input =~ /^\s*$/;
+	$debug and print "user input: $user_input\n";
+	my ($cmd, $predicate) = ($user_input =~ /([\S]+)(.*)/);
+	if ($cmd eq 'eval') {
+			$debug and print "Evaluating perl code\n";
+			print eval $predicate;
+			print "\n";
+			$@ and print "Perl command failed: $@\n";
+	}
+	elsif ( $cmd eq '!' ) {
+			$debug and print "Evaluating shell commands!\n";
+			system $predicate;
+			print "\n";
+	} else {
+
+
+	my @user_input = split /\s*;\s*/, $user_input;
+	map {
+		my $user_input = $_;
 		my ($cmd, $predicate) = ($user_input =~ /([\S]+)(.*)/);
+		$debug and print "cmd: $cmd \npredicate: $predicate\n";
 		if ($cmd eq 'eval') {
-                $debug and print "Evaluating perl code\n";
-                print eval $predicate;
-                print "\n";
-                $@ and print "Perl command failed: $@\n";
-		}
-		elsif ( $cmd eq '!' ) {
-                $debug and print "Evaluating shell commands!\n";
-                system $predicate;
-                print "\n";
+			$debug and print "Evaluating perl code\n";
+			print eval $predicate;
+			print "\n";
+			$@ and print "Perl command failed: $@\n";
+		} elsif ($cmd eq '!') {
+			$debug and print "Evaluating shell commands!\n";
+			system $predicate;
+			print "\n";
+		} elsif ($tn{$cmd}) { 
+			$debug and print qq(Selecting track "$cmd"\n);
+			$this_track = $tn{$cmd};
+			$predicate !~ /^\s*$/ and $parser->command($predicate);
+		} elsif ($cmd =~ /^\d+$/ and $ti[$cmd]) { 
+			$debug and print qq(Selecting track ), $ti[$cmd]->name, $/;
+			$this_track = $ti[$cmd];
+			$predicate !~ /^\s*$/ and $parser->command($predicate);
+		} elsif ($iam_cmd{$cmd}){
+			$debug and print "Found Iam command\n";
+			print eval_iam($user_input), $/ ;
 		} else {
-
-
-        my @user_input = split /\s*;\s*/, $user_input;
-        map {
-            my $user_input = $_;
-            my ($cmd, $predicate) = ($user_input =~ /([\S]+)(.*)/);
-            $debug and print "cmd: $cmd \npredicate: $predicate\n";
-            if ($cmd eq 'eval') {
-                $debug and print "Evaluating perl code\n";
-                print eval $predicate;
-                print "\n";
-                $@ and print "Perl command failed: $@\n";
-            } elsif ($cmd eq '!') {
-                $debug and print "Evaluating shell commands!\n";
-                system $predicate;
-                print "\n";
-            } elsif ($tn{$cmd}) { 
-                $debug and print qq(Selecting track "$cmd"\n);
-                $this_track = $tn{$cmd};
-                $predicate !~ /^\s*$/ and $parser->command($predicate);
-            } elsif ($cmd =~ /^\d+$/ and $ti[$cmd]) { 
-                $debug and print qq(Selecting track ), $ti[$cmd]->name, $/;
-                $this_track = $ti[$cmd];
-                $predicate !~ /^\s*$/ and $parser->command($predicate);
-            } elsif ($iam_cmd{$cmd}){
-                $debug and print "Found Iam command\n";
-                print eval_iam($user_input), $/ ;
-            } else {
-                $debug and print "Passing to parser\n", 
-                $_, $/;
-                #print 1, ref $parser, $/;
-                #print 2, ref $Audio::Ecasound::Multitrack::parser, $/;
-                # both print
-                $parser->command($_) 
-            }    
-        } @user_input;
-		}
-        $ui->refresh; # in case we have a graphic environment
+			$debug and print "Passing to parser\n", 
+			$_, $/;
+			#print 1, ref $parser, $/;
+			#print 2, ref $Audio::Ecasound::Multitrack::parser, $/;
+			# both print
+			$parser->command($_) 
+		}    
+	} @user_input;
+	}
+	$ui->refresh; # in case we have a graphic environment
+	# package :: scope ends here
 }
-package Audio::Ecasound::Multitrack::Text;
 sub show_tracks {
     no warnings;
     my @tracks = @_;
@@ -4172,7 +4214,7 @@ sub show_tracks {
 
         } grep{ ! $_-> hide} @tracks;
         
-    write; # using format at end of file UI.pm
+    write; # using format below
     $- = 0; # $FORMAT_LINES_LEFT # force header on next output
     1;
     use warnings;
@@ -4241,6 +4283,7 @@ IAM
 	
 }
 
+# are these subroutines so different from what's in Core_subs.pl?
 
 package Audio::Ecasound::Multitrack;
 
@@ -4480,6 +4523,10 @@ get_state:
   type: project
   short: recall restore retrieve
   what: retrieve project settings
+list_projects:
+  type: project
+  short: listp
+  what: list project directory
 create_project:
   type: project
   short: create	
@@ -4704,6 +4751,8 @@ create_project: _create_project name end {
 	Audio::Ecasound::Multitrack::t_create_project $item{name}
 }
 
+list_projects: _list_projects end { Audio::Ecasound::Multitrack::list_projects() }
+
 load_project: _load_project name end {
 	Audio::Ecasound::Multitrack::t_load_project( $item{name} )
 }
@@ -4778,7 +4827,7 @@ show_tracks: _show_tracks end {
 	use warnings; 
 	no warnings qw(uninitialized); 
 	print $/, "Group control", " " x 8, 
-	  $Audio::Ecasound::Multitrack::tracker->rw, " " x 24 , $Audio::Ecasound::Multitrack::tracker->version, $/;
+	  $Audio::Ecasound::Multitrack::tracker->rw, " " x 24 , $Audio::Ecasound::Multitrack::tracker->version, $/, $/;
 }
 
 
@@ -5063,6 +5112,7 @@ command: help
 command: helpx
 command: ladspa_register
 command: list_marks
+command: list_projects
 command: list_versions
 command: load_project
 command: loop_disable
@@ -5133,6 +5183,7 @@ _help: 'help' | 'h'
 _helpx: 'helpx'
 _ladspa_register: 'ladspa_register' | 'lrg'
 _list_marks: 'list_marks' | 'lm'
+_list_projects: 'list_projects' | 'listp'
 _list_versions: 'list_versions' | 'lver' | 'lv'
 _load_project: 'load_project' | 'load'
 _loop_disable: 'loop_disable' | 'noloop' | 'nl'
@@ -5203,6 +5254,7 @@ help: _help end { 1 }
 helpx: _helpx end { 1 }
 ladspa_register: _ladspa_register end { 1 }
 list_marks: _list_marks end { 1 }
+list_projects: _list_projects end { 1 }
 list_versions: _list_versions end { 1 }
 load_project: _load_project end { 1 }
 loop_disable: _loop_disable end { 1 }
@@ -5256,8 +5308,6 @@ open STDERR, ">/dev/null" or die "couldn't redirect IO";
 $parser = new Parse::RecDescent ($grammar) or croak "Bad grammar!\n";
 close STDERR;
 open STDERR, ">&SAVERR";
-#select STDOUT; $| = 1;
-# Audio::Ecasound::Multitrack::Text::OuterShell::create_help_subs();
 
 @help_topic = ( undef, qw(   
 					project
