@@ -7,10 +7,10 @@ use warnings;
 no warnings qw(uninitialized);
 no warnings;
 
-
 BEGIN{ 
 
-our $VERSION = '0.975';
+our $VERSION = '0.976';
+our $ABSTRACT = 'Lightweight multitrack recorder/mixer';
 
 print <<BANNER;
 
@@ -27,7 +27,6 @@ BANNER
 
 }
 
-
 use Carp;
 use Cwd;
 use Storable; 
@@ -39,6 +38,9 @@ use Data::YAML;
 use File::Find::Rule;
 use File::Spec::Link;
 use IO::All;
+use Time::HiRes; 
+use Event;
+# use Tk    # loaded conditionally in GUI mode
 
 ## Definitions ##
 
@@ -333,6 +335,8 @@ our (
 
    $previous_text_command, # i want to know if i'm repeating
 	$term, 			# Term::ReadLine object
+	$controller_ports, # where we listen for MIDI messages
+    $midi_inputs,  # on/off/capture
 );
  
 
@@ -355,7 +359,8 @@ our (
 						$mixer_out_format
 						$mixer_out_device
 						$project_root 	
-						$record_device			);
+						$record_device	
+ 						$controller_ports    );
 						
 						
 
@@ -588,12 +593,11 @@ sub prepare {
 	# m: don't load state info on initial startup
 	# e: don't load static effects data
 	# s: don't load static effects data cache
-	if ($opts{t}) {
-		require Time::HiRes;
-		import  Time::HiRes;
-		require Event;
-		import  Event;
-	} else {
+	
+	# load Tk only in graphic mode
+	
+	if ($opts{t}) {}
+	else { 
 		require Tk;
 		import Tk;
 	}
@@ -646,24 +650,22 @@ sub prepare {
 	$ui = $opts{t} ? Audio::Ecasound::Multitrack::Text->new 
 				   : Audio::Ecasound::Multitrack::Graphical->new ;
 
-	# default to graphic mode  (Tk events and event loop)
-	# text mode (Event event loop)
+	# default to graphic mode  (Tk event loop)
+	# text mode (Event.pm event loop)
 	
 
 	$ui->init_gui;
 	$ui->transport_gui;
 	$ui->time_gui;
 
-	print "project_name: $project_name\n";
 	if (! $project_name ){
 		$project_name = "untitled";
 		$opts{c}++; 
 	}
+	print "project_name: $project_name\n";
 	
 	load_project( name => $project_name, create => $opts{c}) 
 	  if $project_name;
-
-	# if there is no project name, we still init using pwd
 
 	$debug and print "project_root: ", project_root(), $/;
 	$debug and print "this_wav_dir: ", this_wav_dir(), $/;
@@ -778,10 +780,9 @@ sub list_projects {
 }
 		
 sub load_project {
-	local $debug = 0;
+	$debug2 and print "&load_project\n";
 	#carp "load project: I'm being called from somewhere!\n";
 	my %h = @_;
-	$debug2 and print "&load_project\n";
 	$debug and print yaml_out \%h;
 	print ("no project name.. doing nothing.\n"),return unless $h{name} or $project;
 
@@ -2445,9 +2446,10 @@ sub integrate_ladspa_hints {
 	map{ 
 		my $i = $effect_i{$_};
 		# print ("$_ not found\n"), 
-		next unless $i;
-		$effects[$i]->{params} = $effects_ladspa{$_}->{params};
-		$effects[$i]->{display} = $effects_ladspa{$_}->{display};
+		if ($i) {
+			$effects[$i]->{params} = $effects_ladspa{$_}->{params};
+			$effects[$i]->{display} = $effects_ladspa{$_}->{display};
+		}
 	} keys %effects_ladspa;
 
 my %L;
@@ -2495,8 +2497,12 @@ sub round {
 ## persistent state support
 
 sub save_state {
-
 	$debug2 and print "&save_state\n";
+
+	# do nothing if only Master and Mixdown
+	
+	return if scalar @Audio::Ecasound::Multitrack::Track::by_index == 3; 
+
 	my $file = shift;
 
 	# remove nulls in %cops 
@@ -2524,7 +2530,7 @@ sub save_state {
 	$file = $file ? $file : $state_store_file;
 	$file = join_path(&project_dir, $file);
 	# print "filename base: $file\n";
-	print "saving state as $file\n";
+	print "\nSaving state as $file.yml\n";
 
     # sort marks
 	
@@ -2589,7 +2595,7 @@ sub retrieve_state {
 	my $yamlfile = $file;
 	$yamlfile .= ".yml" unless $yamlfile =~ /yml$/;
 	$file = $yamlfile if -f $yamlfile;
-	! -f $file and (print "file not found: $file\n"), return;
+	! -f $file and (print "file not found: $file.yml\n"), return;
 	$debug and print "using file: $file\n";
 
 	assign_var($file, @persistent_vars );
@@ -2741,6 +2747,8 @@ sub save_effects {
 
 }
 
+=comment unused
+
 sub retrieve_effects {
 	$debug2 and print "&retrieve_effects\n";
 	my $file = shift;
@@ -2839,8 +2847,8 @@ sub retrieve_effects {
 
 }
 
-	
-
+=cut
+sub process_control_inputs { }
 ### end
 
 
@@ -3077,10 +3085,10 @@ sub init_gui {
 	$sn_quit->configure(-text => "Quit",
 		 -command => sub { 
 				return if transport_running();
+				save_state($save_id);
+				print "Exiting...\n";		
 				exit;
-				 }
-				);
-
+				 });
 
 	$build_track_add->configure( 
 			-text => 'Add New Track',
@@ -4101,6 +4109,25 @@ sub loop {
 		interval => 3,
 	    cb     => \&Audio::Ecasound::Multitrack::heartbeat,               # callback;
 	);
+	if ( $midi_inputs =~ /on|capture/ ){
+		my $command = "aseqdump ";
+		$command .= "-p $controller_ports" if $controller_ports;
+		open MIDI, "$command |" or die "can't fork $command: $!";
+		$event_id{sequencer} = Event->io(
+			desc   => 'read ALSA sequencer events',
+			fd     => \*MIDI,                    # handle;
+			poll   => 'r',	                     # watch for incoming chars
+			cb     => \&Audio::Ecasound::Multitrack::process_control_inputs, # callback;
+			repeat => 1,                         # keep alive after event;
+		 );
+		$event_id{sequencer_error} = Event->io(
+			desc   => 'read ALSA sequencer events',
+			fd     => \*MIDI,                    # handle;
+			poll   => 'e',	                     # watch for exception
+			cb     => sub { die "sequencer pipe read failed" }, # callback;
+		 );
+	
+	}
 	Event::loop();
 
 }
@@ -4687,6 +4714,10 @@ loop_disable:
   type: transport
   short: noloop nl
   what: disable automatic looping
+loop_show:
+  type: transport
+  short: ls
+  what: show loop status and endpoints (TODO)
 T:
   type: transport
   what: ecasound-only start
@@ -4709,6 +4740,30 @@ project_name:
   type: project
   what: show current project name
   short: project pn
+midi_inputs:
+  type: perform
+  what: use MIDI messages to control parameters
+  short: midi
+  parameters: on/off/capture  
+erase_capture:
+  type: perform
+  short: erase
+  what: erase recorded controller inputs
+  parameters: optional range, as decimal times in seconds, or mark names or indices 
+perform:
+  type: perform
+  what: playback recorded controller inputs
+  short: perform perf
+  parameters: on/off
+bind_midi:
+  type: perform
+  parameters: midi_port midi_controller chain_op_id parameter multiplier offset (log)
+  what: bind a midi controller to a chain operator parameter
+  short: bind
+bind_off:
+  type: perform
+  what: remove MIDI binding
+  parameters: midi_port midi_controller
 ...
 
 YML
@@ -4881,13 +4936,13 @@ exit: 'exit' end { Audio::Ecasound::Multitrack::save_state($Audio::Ecasound::Mul
 
 
 
-r: 'r' dd  {	
+record_channel: 'r' dd  {	
 				$Audio::Ecasound::Multitrack::this_track->set(ch_r => $item{dd});
 				$Audio::Ecasound::Multitrack::ch_r = $item{dd};
 				print "Input switched to channel $Audio::Ecasound::Multitrack::ch_r.\n";
 				
 				}
-m: 'm' dd  {	
+monitor_channel: 'm' dd  {	
 				$Audio::Ecasound::Multitrack::this_track->set(ch_m => $item{dd}) ;
 				$Audio::Ecasound::Multitrack::ch_m = $item{dd};
 				print "Output switched to channel $Audio::Ecasound::Multitrack::ch_m.\n";
@@ -5093,6 +5148,8 @@ command: add_ctrl
 command: add_effect
 command: add_track
 command: arm
+command: bind_midi
+command: bind_off
 command: connect
 command: create_project
 command: ctrl_register
@@ -5100,6 +5157,7 @@ command: disconnect
 command: dump_group
 command: dump_track
 command: engine_status
+command: erase_capture
 command: exit
 command: generate
 command: get_state
@@ -5117,7 +5175,9 @@ command: list_versions
 command: load_project
 command: loop_disable
 command: loop_enable
+command: loop_show
 command: mark
+command: midi_inputs
 command: mixdown
 command: mixoff
 command: mixplay
@@ -5135,6 +5195,7 @@ command: pan_back
 command: pan_center
 command: pan_left
 command: pan_right
+command: perform
 command: preset_register
 command: previous_mark
 command: project_name
@@ -5164,6 +5225,8 @@ _add_ctrl: 'add_ctrl' | 'acl'
 _add_effect: 'add_effect' | 'fxa' | 'afx'
 _add_track: 'add_track' | 'add'
 _arm: 'arm' | 'generate_and_connect'
+_bind_midi: 'bind_midi' | 'bind'
+_bind_off: 'bind_off'
 _connect: 'connect' | 'con'
 _create_project: 'create_project' | 'create'
 _ctrl_register: 'ctrl_register' | 'crg'
@@ -5171,6 +5234,7 @@ _disconnect: 'disconnect' | 'dcon'
 _dump_group: 'dump_group' | 'dumpg'
 _dump_track: 'dump_track' | 'dump'
 _engine_status: 'engine_status' | 'egs'
+_erase_capture: 'erase_capture' | 'erase'
 _exit: 'exit' | 'quit' | 'q'
 _generate: 'generate' | 'gen'
 _get_state: 'get_state' | 'recall' | 'restore' | 'retrieve'
@@ -5188,7 +5252,9 @@ _list_versions: 'list_versions' | 'lver' | 'lv'
 _load_project: 'load_project' | 'load'
 _loop_disable: 'loop_disable' | 'noloop' | 'nl'
 _loop_enable: 'loop_enable' | 'loop'
+_loop_show: 'loop_show' | 'ls'
 _mark: 'mark' | 'k'
+_midi_inputs: 'midi_inputs' | 'midi'
 _mixdown: 'mixdown' | 'mxd'
 _mixoff: 'mixoff' | 'norm' | 'mxo' | 'normal'
 _mixplay: 'mixplay' | 'mxp'
@@ -5206,6 +5272,7 @@ _pan_back: 'pan_back' | 'pb'
 _pan_center: 'pan_center' | 'pc'
 _pan_left: 'pan_left' | 'pl'
 _pan_right: 'pan_right' | 'pr'
+_perform: 'perform' | 'perform' | 'perf'
 _preset_register: 'preset_register' | 'prg'
 _previous_mark: 'previous_mark' | 'pm'
 _project_name: 'project_name' | 'project' | 'pn'
@@ -5235,6 +5302,8 @@ add_ctrl: _add_ctrl end { 1 }
 add_effect: _add_effect end { 1 }
 add_track: _add_track end { 1 }
 arm: _arm end { 1 }
+bind_midi: _bind_midi end { 1 }
+bind_off: _bind_off end { 1 }
 connect: _connect end { 1 }
 create_project: _create_project end { 1 }
 ctrl_register: _ctrl_register end { 1 }
@@ -5242,6 +5311,7 @@ disconnect: _disconnect end { 1 }
 dump_group: _dump_group end { 1 }
 dump_track: _dump_track end { 1 }
 engine_status: _engine_status end { 1 }
+erase_capture: _erase_capture end { 1 }
 exit: _exit end { 1 }
 generate: _generate end { 1 }
 get_state: _get_state end { 1 }
@@ -5259,7 +5329,9 @@ list_versions: _list_versions end { 1 }
 load_project: _load_project end { 1 }
 loop_disable: _loop_disable end { 1 }
 loop_enable: _loop_enable end { 1 }
+loop_show: _loop_show end { 1 }
 mark: _mark end { 1 }
+midi_inputs: _midi_inputs end { 1 }
 mixdown: _mixdown end { 1 }
 mixoff: _mixoff end { 1 }
 mixplay: _mixplay end { 1 }
@@ -5277,6 +5349,7 @@ pan_back: _pan_back end { 1 }
 pan_center: _pan_center end { 1 }
 pan_left: _pan_left end { 1 }
 pan_right: _pan_right end { 1 }
+perform: _perform end { 1 }
 preset_register: _preset_register end { 1 }
 previous_mark: _previous_mark end { 1 }
 project_name: _project_name end { 1 }
