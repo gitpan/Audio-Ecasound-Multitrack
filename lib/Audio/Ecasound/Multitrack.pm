@@ -9,7 +9,7 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.978';
+our $VERSION = '0.98';
 our $ABSTRACT = 'Lightweight multitrack recorder/mixer';
 
 print <<BANNER;
@@ -40,9 +40,13 @@ use File::Spec::Link;
 use File::Spec::Unix;
 use File::Temp;
 use IO::All;
-use Time::HiRes; 
 use Event;
+use Time::HiRes qw( usleep ualarm gettimeofday tv_interval nanosleep 
+                    clock_gettime clock_getres clock_nanosleep clock stat );
+
 # use Tk    # loaded conditionally in GUI mode
+
+$| = 1;     # flush STDOUT buffer on every write
 
 ## Definitions ##
 
@@ -310,6 +314,7 @@ our (
 	$mixer_out_device,       # where to send stereo output
 	$mixer_out_device_jack,  # JACK target for stereo output
 	$record_device,    # where to get our inputs
+	$record_device_jack,    # where to get our inputs
 
 
 	# rules
@@ -366,9 +371,7 @@ our (
 						$raw_to_disk_format
 						$mixer_out_format
 						$mixer_out_device
-						$mixer_out_device_jack
 						$record_device	
-						$record_device_jack
 						$project_root 	
  						$controller_ports
 						$jack_enable
@@ -453,8 +456,9 @@ $chain_setup_file = 'Setup.ecs'; # For loading by Ecasound
 $tk_input_channels = 10;
 $use_monitor_version_for_mixdown = 1; # not implemented yet
 $ladspa_sample_rate = 44100; # temporary setting
-$jack_enable = 0; # you should configure jack as device directly in .namarc
 $project_root = join_path( $ENV{HOME}, "nama");
+$record_device_jack = 'jack_alsa';    # default input soundcard for JACK
+$mixer_out_device_jack = 'jack_alsa'; # default mixer out target for JACK
 
 ## Load my modules
 
@@ -503,79 +507,84 @@ sub discard_object {
 	@_;
 }
 
+
+
 sub first_run {
-	if ( ! -e $project_root ) {
+my $config = config_file();
+$config = "$ENV{HOME}/$config" unless -e $config;
+$debug and print "config: $config\n";
+if ( ! -e $config and ! -l $config  ) {
 
 # check for missing components
 
-	my $missing;
-		my @a = `which analyseplugin`;
-		@a or warn ( <<WARN
+my $missing;
+my @a = `which analyseplugin`;
+@a or warn ( <<WARN
 LADSPA helper program 'analyseplugin' not found
 in $ENV{PATH}, your shell's list of executable 
 directories. You will probably have more fun with the LADSPA
 libraries and executables installed. http://ladspa.org
 WARN
-) and  sleep 2 and $missing++;
-		my @b = `which ecasound`;
-		@b or warn ( <<WARN
+) and  sleep 1 and $missing++;
+my @b = `which ecasound`;
+@b or warn ( <<WARN
 Ecasound executable program 'ecasound' not found
 in $ENV{PATH}, your shell's list of executable 
 directories. This suite depends on the Ecasound
 libraries and executables for all audio processing! 
 WARN
-) and  sleep 2 and $missing++;
+) and  sleep 1 and $missing++;
 
 my @c = `which file`;
-		@c or warn ( <<WARN
+@c or warn ( <<WARN
 BSD utility program 'file' not found
 in $ENV{PATH}, your shell's list of executable 
 directories. This program is currently required
 to be able to play back mixes in stereo.
 WARN
-) and sleep 2;
+) and sleep 1;
 if ( $missing ) {
 print "You lack $missing main parts of this suite.  
 Do you want to continue? [N] ";
-		$missing and 
-		my $reply = <STDIN>;
-		chomp $reply;
-		print ("Goodbye.\n"), exit unless $reply =~ /y/i;
+$missing and 
+my $reply = <STDIN>;
+chomp $reply;
+print ("Goodbye.\n"), exit unless $reply =~ /y/i;
 }
 print <<HELLO;
 
-Aloha. Welcome to Nama and Ecasound. 
+Aloha. Welcome to Nama and Ecasound.
+
+HELLO
+usleep 800_000 ;
+print "Configuration file $config not found.
+
+May I create it for you? [yes] ";
+my $reply = <STDIN>;
+chomp $reply;
+if ($reply !~ /n/i){
+usleep 800_000 ;
+print <<PROJECT_ROOT;
 
 Nama places all sound and control files under the
-project root directory, which by default is $project_root.
+project root directory, by default $ENV{HOME}/nama.
 
-The project root can be specified using the -d command line option, 
-and in the configuration file .namarc . 
-
-Would you like to create project root directory $project_root ? [Y] 
-HELLO
-		my $reply = <STDIN>;
-		$reply = lc $reply;
-		if ($reply !~ /n/i) {
-			create_dir( $project_root);
-			create_dir( join_path $project_root, "untitled");
-			print "\n... Done!\n\n";
-		} 
-	}
-
-		my $config = join_path($ENV{HOME}, ".namarc");
-	if ( ! -e $config) {
-		print "Configuration file $config not found.\n";
-		print "Would you like to create it? [Y] ";
-		my $reply = <STDIN>;
-		chomp $reply;
-		if ($reply !~ /n/i){
-			$default =~ s/project_root.*$/project_root: $ENV{HOME}\/nama/m;
-			$default > io( $config );
-			print "\n.... Done!\n\nPlease edit $config and restart Nama.\n";
-		}
-		exit;
-	}
+PROJECT_ROOT
+print "Would you like to create it? [yes] ";
+my $reply = <STDIN>;
+chomp $reply;
+if ($reply !~ /n/i){
+	$default =~ s/project_root.*$/project_root: $ENV{HOME}\/nama/m;
+	create_dir( $project_root);
+	create_dir( join_path $project_root, "untitled");
+} 
+$default > io( $config );
+usleep 800_000 ;
+print "\n.... Done!\n\nPlease edit $config and restart Nama.\n\n";
+}
+print "Exiting.\n"; 
+exit;	
+}
 }
 	
 
@@ -595,7 +604,7 @@ sub prepare {
 	### Option Processing ###
 	# push @ARGV, qw( -e  );
 	#push @ARGV, qw(-d /media/sessions test-abc  );
-	getopts('amcegsdtf:', \%opts); 
+	getopts('amcegstrd:f:', \%opts); 
 	#print join $/, (%opts);
 	# a: save and reload ALSA state using alsactl
 	# d: set project root dir
@@ -604,16 +613,17 @@ sub prepare {
 	# g: gui mode (default)
 	# t: text mode 
 	# m: don't load state info on initial startup
-	# e: don't load static effects data
-	# s: don't load static effects data cache
+	# r: regenerate effects data cache
+	# e: don't load static effects data (for debugging)
+	# s: don't load static effects data cache (for debugging)
 	
 	# load Tk only in graphic mode
-	
 	if ($opts{t}) {}
 	else { 
 		require Tk;
 		import Tk;
 	}
+
 	$project_name = shift @ARGV;
 	$debug and print "project name: $project_name\n";
 
@@ -956,10 +966,7 @@ sub initialize_rules {
 		target		=>  'REC',
 		chain_id	=>  sub{ my $track = shift; 'R'. $track->n },   
 		input_type	=>  'device',
-		input_object	=>  sub { my $track = shift;
-									($jack_enable and $track->jack_source)
-									? $track->jack_source
-									: $record_device },
+		input_object	=> \&record_device, 
 		output_type	=>  'file',
 		output_object   => sub {
 			my $track = shift; 
@@ -983,10 +990,7 @@ sub initialize_rules {
 		chain_id		=>  sub{ my $track = shift; $track->n },   
 		target			=>	'REC',
 		input_type		=>  'device',
-		input_object	=>  sub {   my $track = shift;
-									($jack_enable and $track->jack_source)
-										? $track->jack_source
-										: $record_device },
+		input_object	=>  \&record_device, 
 		output_type		=>  'cooked',
 		output_object	=>  sub{ my $track = shift; "loop," .  $track->n },
 		post_input			=>	sub{ my $track = shift;
@@ -1024,6 +1028,16 @@ sub initialize_rules {
 	);
 
 
+}
+
+sub record_device { 
+	my $track = shift;
+	if ($jack_enable){
+		$track->jack_source
+			?  $track->jack_source
+			:  $record_device_jack
+	} else { 
+		$record_device }
 }
 
 sub eliminate_loops {
@@ -1874,9 +1888,11 @@ sub all {
 }
 
 sub show_chain_setup {
+	$debug2 and print "&show_chain_setup\n";
 	my $setup = join_path( project_dir(), $chain_setup_file);
 	if ( $use_pager ) {
-		system qq($ENV{PAGER} $setup);
+		my $pager = $ENV{PAGER} ? $ENV{PAGER} : "/usr/bin/less";
+		system qq($pager $setup);
 	} else {
 		my $chain_setup;
 		io( $setup ) > $chain_setup; 
@@ -1884,10 +1900,12 @@ sub show_chain_setup {
 	}
 }
 sub pager {
+	$debug2 and print "&pager\n";
 	my @output = @_;
-	my $line_count;
+	my ($screen_lines, $columns) = split " ", qx(stty size);
+	my $line_count = 0;
 	map{ $line_count += $_ =~ tr(\n)(\n) } @output;
-	if ( $use_pager and $line_count > 24) { 
+	if ( $use_pager and $line_count > $screen_lines ) { 
 		my $fh = File::Temp->new();
 		my $fname = $fh->filename;
 		print $fh @output;
@@ -1897,6 +1915,7 @@ sub pager {
 	}
 }
 sub file_pager {
+	$debug2 and print "&file_pager\n";
 	my $fname = shift;
 	if (! -e $fname or ! -r $fname ){
 		carp "file not found or not readable: $fname\n" ;
@@ -2262,6 +2281,11 @@ sub prepare_static_effects_data{
 
 	my $effects_cache = join_path(&project_root, $effects_cache_file);
 
+	if ($opts{r}){ 
+
+		unlink $effects_cache;
+		print "Regenerating effects data cache\n";
+	}
 	# TODO re-read effects data if ladspa or user presets are
 	# newer than cache
 
@@ -2841,7 +2865,7 @@ sub retrieve_state {
 
 	# restore Alsa mixer settings
 	if ( $opts{a} ) {
-		my $file = $file;
+		my $file = $file; 
 		$file =~ s/\.yml$//;
 		print "restoring ALSA settings\n";
 		print qx(alsactl -f $file.alsa restore);
@@ -4242,13 +4266,16 @@ sub command_process {
 	my ($cmd, $predicate) = ($user_input =~ /([\S]+)(.*)/);
 	if ($cmd eq 'eval') {
 			$debug and print "Evaluating perl code\n";
-			print eval $predicate;
+			pager( eval $predicate );
 			print "\n";
 			$@ and print "Perl command failed: $@\n";
 	}
 	elsif ( $cmd eq '!' ) {
 			$debug and print "Evaluating shell commands!\n";
-			system $predicate;
+			#system $predicate;
+			my $output = qx( $predicate );
+			#print "length: ", length $output, $/;
+			pager($output); 
 			print "\n";
 	} else {
 
@@ -4266,7 +4293,8 @@ sub command_process {
 		} elsif ($cmd eq '!') {
 			$debug and print "Evaluating shell commands!\n";
 			my $output = qx( $predicate );
-			#pager($output); # TODO
+			#print "length: ", length $output, $/;
+			pager($output); 
 			print "\n";
 		} elsif ($tn{$cmd}) { 
 			$debug and print qq(Selecting track "$cmd"\n);
@@ -4279,7 +4307,7 @@ sub command_process {
 		} elsif ($iam_cmd{$cmd}){
 			$debug and print "Found Iam command\n";
 			my $result = eval_iam($user_input);
-			#pager( $result );  
+			pager( $result );  
 		} else {
 			$debug and print "Passing to parser\n", 
 			$_, $/;
@@ -4378,12 +4406,10 @@ IAM
 	}
 	# e.g. help tap_reverb
 	if ( $effects_ladspa{"el:$name"}) {
-	push @output, "$name is the code for the following LADSPA effect:\n",
-	#print yaml_out( $effects_ladspa{"el:$name"});
-    	print qx(analyseplugin $name);
+ 		push @output, "$name is the code for the following LADSPA effect:\n";
+    	push @output, qx(analyseplugin $name);
 	}
-	Audio::Ecasound::Multitrack::pager(@output);
-	
+	Audio::Ecasound::Multitrack::pager( @output ); 
 }
 
 # are these subroutines so different from what's in Core_subs.pl?
@@ -4933,9 +4959,9 @@ add_track: _add_track name end { Audio::Ecasound::Multitrack::add_track($item{na
 set_track: _set_track key someval end {
 	 $Audio::Ecasound::Multitrack::this_track->set( $item{key}, $item{someval} );
 }
-dump_track: _dump_track { Audio::Ecasound::Multitrack::pager($Audio::Ecasound::Multitrack::this_track->dumpp) }
+dump_track: _dump_track { Audio::Ecasound::Multitrack::pager($Audio::Ecasound::Multitrack::this_track->dump) }
 
-dump_group: _dump_group { Audio::Ecasound::Multitrack::pager($Audio::Ecasound::Multitrack::tracker->dumpp) }
+dump_group: _dump_group { Audio::Ecasound::Multitrack::pager($Audio::Ecasound::Multitrack::tracker->dump) }
 
 dump_all: _dump_all { Audio::Ecasound::Multitrack::dump_all() }
 
@@ -5044,7 +5070,7 @@ source: _source end {
 
 jack: _jack { $Audio::Ecasound::Multitrack::jack_enable = 1; print "Using JACK.\n" }
 
-nojack: _nojack { $Audio::Ecasound::Multitrack::jack_enable = 1; print "JACK support disabled.\n" }
+nojack: _nojack { $Audio::Ecasound::Multitrack::jack_enable = 0; print "JACK support disabled.\n" }
 
 
 stereo: _stereo { $Audio::Ecasound::Multitrack::this_track->set(ch_count => 2) }
@@ -5228,9 +5254,9 @@ list_versions: _list_versions end {
 	print join " ", @{$Audio::Ecasound::Multitrack::this_track->versions}, $/;
 }
 
-ladspa_register: _ladspa_register end { print Audio::Ecasound::Multitrack::eval_iam("ladspa-register") }
-preset_register: _preset_register end { print Audio::Ecasound::Multitrack::eval_iam("preset-register") }
-ctrl_register: _ctrl_register end { print Audio::Ecasound::Multitrack::eval_iam("ctrl-register") }
+ladspa_register: _ladspa_register end { Audio::Ecasound::Multitrack::pager( Audio::Ecasound::Multitrack::eval_iam("ladspa-register")) }
+preset_register: _preset_register end { Audio::Ecasound::Multitrack::pager( Audio::Ecasound::Multitrack::eval_iam("preset-register"))}
+ctrl_register: _ctrl_register end { Audio::Ecasound::Multitrack::pager( Audio::Ecasound::Multitrack::eval_iam("ctrl-register"))}
 project_name: _project_name end { print "project name: ", $Audio::Ecasound::Multitrack::project_name, $/ }
 
 
@@ -5486,6 +5512,9 @@ vol: _vol end { 1 }
 );
 
 # we redirect STDERR to shut up noisy Parse::RecDescent
+# but don't see "Bad grammar!" message when P::RD fails
+# to process the grammar
+
 open SAVERR, ">&STDERR";
 open STDERR, ">/dev/null" or die "couldn't redirect IO";
 $parser = new Parse::RecDescent ($grammar) or croak "Bad grammar!\n";
@@ -5727,10 +5756,11 @@ project_root: ~                  # replaced during first run
 
 # device selections
 
+# ALSA/OSS devices (JACK is handled differently)
+
 mixer_out_device: consumer       # default mixer out target
-mixer_out_device_jack: jack_alsa # default mixer out target for JACK
+mixer_out_format: cd-stereo      
 record_device: consumer          # default soundcard for input
-record_device_jack: jack_alsa    # default input soundcard for JACK
 
 # global variables for our chain setups
 
@@ -5740,21 +5770,16 @@ ecasound_globals: "-B auto -r -z:mixmode,sum -z:psr "
 
 mixer_out_format: cd-stereo      # wrong for JACK, but Ecasound fixes this
 mix_to_disk_format: cd-stereo
-raw_to_disk_format: s16_le,N,frequency
+raw_to_disk_format: 16,N,frequency
 
 # audio devices 
 
 # indents _are_ significant in the lines below
 
 devices: 
-  jack_alsa: 
-    ecasound_id: jack_alsa
-    input_format: jack12
-    output_format: jack10
-  jack:
-    ecasound_id: jack
-    input_format: f32_le,N,frequency
-    output_format: f32_le,N,frequency
+
+# ALSA/OSS
+
   multi:
     ecasound_id: alsa,ice1712
     input_format: 32-12
@@ -5763,6 +5788,18 @@ devices:
     ecasound_id: alsa,default   # alsa,hw:0 /dev/dsp
     input_format: cd-stereo
     output_format: cd-stereo
+
+# JACK
+
+  jack_alsa: 
+    ecasound_id: jack_alsa
+    input_format: jack12
+    output_format: jack10
+
+  jack:
+    ecasound_id: jack
+    input_format: 32,N,frequency
+    output_format: 32,N,frequency
 
 # use JACK by default
 
@@ -5797,8 +5834,6 @@ __END__
 
 =head1 NAME
 
-=head1 NAME
-
 B<Audio::Ecasound::Multitrack> - Perl extensions for multitrack audio processing
 
 B<Nama> - Lightweight multitrack recorder/mixer
@@ -5813,13 +5848,12 @@ B<Audio::Ecasound::Multitrack> provides class libraries for
 tracks and buses, and a track oriented user interface for managing 
 runs of the Ecasound audio-processing engine.
 
-B<Nama> is a recorder/mixer application that configures
-Ecasound as a single mixer bus.
+B<Nama> is a lightweight recorder/mixer application that
+configures Ecasound as a single mixer bus.
 
-By default, B<Nama> starts up the Tk GUI interface.
-The command line interface runs simultaneously in the
-terminal. The B<-t> option provides text interface for
-console users, and does not require the Tk libraries.
+By default, Nama starts up a GUI interface with a command
+line interface running in the terminal window. The B<-t>
+option provides a text-only interface for console users.
 
 =head1 OPTIONS
 
@@ -5829,17 +5863,17 @@ console users, and does not require the Tk libraries.
 
 Use F<project_root> as Nama's top-level directory. Default: $HOME/nama
 
+=item B<-f> F<config_file>
+
+Use F<config_file> instead of default F<.namarc>
+
 =item B<-g>
 
-Graphical mode, with text interface in terminal window
+GUI/text mode (default)
 
 =item B<-t>
 
 Text-only mode
-
-=item B<-f> F<config_file>
-
-Use F<config_file> instead of default F<.namarc>
 
 =item B<-c>
 
@@ -5851,74 +5885,83 @@ Save and reload ALSA mixer state using alsactl
 
 =item B<-m>
 
-Suppress loading of saved state
+Don't load saved state
 
-=item B<-e>
+=item B<-r>
 
-Don't load static effects data
-
-=item B<-s>
-
-Don't load static effects data cache
+Regenerate effects data cache
 
 =back
 
-=head1 STATIC AND DYNAMIC COMMANDS
+=head1 CONTROLLING ECASOUND
 
-It may be helpful to observe that our commands for audio
-processing fall into two categories:
+Ecasound is configured through use of I<chain setups>.
+Chain setups are central to controlling Ecasound.  
+Nama generates appropriate chain setups for 
+recording, playback, and mixing covering a 
+large portion of Ecasound's functionality.
+
+Commands for audio processing with Nama/Ecasound fall into
+two categories: I<static commands> that influence the chain
+setup and I<dynamic commands> that influence the realtime
+behavior of the audio processing engine.
 
 =head2 STATIC COMMANDS
 
-Some commands control the chain setup that will be used to
-configure Ecasound for audio processing.  I refer to them as
-I<static commands>.  Static commands have no effect while
-the engine is running, come into play only the next time the
-transport is armed.
-
-For example, setting the REC/MON/OFF status of a track or
-bus determines whether it will be included next time the
+Setting the REC/MON/OFF status of a track by the
+C<rec>/C<mon>/C<off> commands, for example,
+determine whether that track will be included next time the
 transport is armed, and whether the corresponding audio
 stream will be recorded to a file or played back from an
-existing file. 
+existing file. Other static commands include C<loop_enable>
+C<jack>/C<nojack>, and C<stereo>/C<mono>. 
 
+=head2 CONFIGURING THE ENGINE
+
+The C<generate> command creates a new chain setup. C<connect> configures
+the engine using the most recently created setup. 
+C<arm> is equivalent to C<generate> followed by
+C<connect>. Issuing C<arm> just prior to starting the engine
+ensures that any changes you've made by issuing static
+commands are reflected in the next processing run.
 
 =head2 DYNAMIC COMMANDS
 
-Once the transport is running, another subset of commands
-controls the audio processing engine, for example adjusting
-effect parameters or repositioning the playback head.
+Once a chain setup is loaded, another subset of commands
+controls the audio processing engine. Commonly used
+I<dynamic commands> include C<start> and C<stop>;  C<forward>,
+C<rewind> and C<setpos> commands for repositioning the playback
+head; and C<vol> and C<pan> for adjusting effect parameters.
+Effect parameters may be adjusted at any time. Effects may
+be added  audio processing, however the additional latency
+will cause an audible click.
 
-=head1 FIRST RUN
+=head1 DIAGNOSTICS
 
-On the first run the program prompts the user for permission
-to create the configuration file, usually F<$HOME/.namarc>, and
-a recording projects directory, F<$HOME/nama> by
-default.  You should then edit F<.namarc> to suit your audio
-configuration.
-
-=head1 PERSISTENCE
-
-Project state can be stored/retrieved. These data are stored
-by default in the F<State.yml> file in the project
-directory.
+Once generated by C<generate> or C<arm> commands, the chain
+setup may be inspected with the C<chains> command.  The
+C<showio> command displays the data structure used to
+generate the chain setup. C<dump> displays data
+for the current track. C<dumpall> shows the state
+of most program objects and variables (identical
+to the F<State.yml> file created by the C<save>
+command.)
 
 =head1 Tk GRAPHICAL UI 
 
 Invoked by default, the Tk interface provides all
-functionality on two panels, one for general control,
-the second for effects. 
+functionality on two panels, one for general control, the
+second for effects. 
 
 Logarithmic sliders are provided automatically for effects
-with hinting. Text-entry widgets are used to 
-enter parameters for effects where hinting is not
-available.
+with hinting. Text-entry widgets are used to enter
+parameters for effects where hinting is not available.
 
 After issuing the B<arm> or B<connect> commands, the GUI
-time display changes color to indicate whether the upcoming operation
-will include live recording (red), mixdown only (yellow) or
-playback only (green).  Live recording and mixdown can 
-take place simultaneously.
+time display changes color to indicate whether the upcoming
+operation will include live recording (red), mixdown only
+(yellow) or playback only (green).  Live recording and
+mixdown can take place simultaneously.
 
 The text command prompt appears in the terminal window
 during GUI operation. Text commands may be issued at any
@@ -5934,9 +5977,8 @@ B<nama ('h' for help)E<gt>>
 
 =back
 
-You can now enter commands.  Nama and Ecasound
-commands may be entered directly. You may also enter Perl
-code preceded by C<eval> or shell code preceded by C<!>.
+You can enter Nama and Ecasound commands directly, Perl code
+preceded by C<eval> or shell code preceded by C<!>.
 
 Multiple commands on a single line are allowed if delimited
 by semicolons. Usually the lines are split on semicolons and
@@ -5952,56 +5994,98 @@ the string C<foo>.
 
 =head1 TRACKS
 
+Ecasound deals with audio processing at
+the level of devices, files, and signal-processing
+chains. Nama implements tracks to provide a
+level of control and convenience comparable to 
+many digital audio workstations.
+
 Each track has a descriptive name (i.e. vocal) and an
 integer track-number assigned when the track is created.
 
+=head2 VERSION NUMBER
+
 Multiple WAV files can be recorded for each track. These are
-identified by version number. Identical version numbers indicate WAV files
-recorded at the same time. Version number increments
-automatically so that the order of version numbers
-follows the time sequence of the recordings.
+identified by a version number that increments with each
+recording run, i.e. F<sax_1.wav>, F<sax_2.wav>, etc.  All
+files recorded at the same time have the same version
+numbers. 
+
+Version numbers for playback can be selected at the group
+and track level. By setting the group version number to 5,
+you can play back the fifth take of a song, or perhaps the
+fifth song of a live recording session. 
+
+The track's version setting, if present, overrides 
+the group setting. Setting the track version to zero
+restores control of the version number to the default
+group setting.
+
+=head2 REC/MON/OFF
+
+REC/MON/OFF status is used to generate the chain setup
+for an audio processing run.
 
 Each track, including Master and Mixdown, has its own
 REC/MON/OFF setting and displays its own REC/MON/OFF status.
-The Master bus has only MON/OFF status. Setting REC status
-for the Mixdown bus has the same effect as issuing the
-B<mixdown> command. As with other engine operations, a start
-command must be issued for mixdown to commence.
+The Tracker group, which includes all user tracks, also has
+REC, MON and OFF settings. These provides a convenient way
+to control the behavior of all user tracks.
 
-All user tracks belong to the Tracker group, which has
-a group REC/MON/OFF setting and a default version setting
-that advances automatically so that the default will
-be to play back the most recent set of multitrack
-recordings all together.
+As the name suggests, I<REC> status indicates that a track
+is ready to record a WAV file. You need to set both track and
+group to REC to source an audio stream from JACK or the
+soundcard.
 
-Setting the group to MON (text command B<group_monitor>)
-forces user tracks with a REC setting to MON status if
-a WAV file is available to play, or OFF status if no
-audio stream is available. 
+I<MON> status indicates an audio stream available from disk.
+It requires a MON setting for the track or group as well as
+the presence of file with the selected version number.
 
-The group MON mode triggers automatically after 
-recording has created new WAV files.
+I<OFF> status means that no audio is available for the track
+from any source.  A track with no recorded WAV files 
+will show OFF status, even if set to MON.
+
+An OFF setting for the track or group always results in OFF
+status. A track with OFF status will be excluded from the
+chain setup. (This setting is distinct from the action of
+the C<mute> command, which sets the volume of the track to
+zero.)
+
+All user tracks belong to the Tracker group, which has a
+group REC/MON/OFF setting and a default version setting for
+the entire group.
+ 
+Setting the group to MON (C<group_monitor> or C<gmon>)
+forces user tracks with a REC setting to MON status if a WAV
+file is available to play, or OFF status if no audio stream
+is available. 
+
+The group MON mode triggers automatically after a recording
+has created new WAV files.
 
 The group OFF setting (text command B<group_off>)
 excludes all user tracks from the chain setup, and is
 typically used when playing back mixdown tracks.  The
 B<mixplay> command sets the Mixdown group
-to MON and the Tracker group to
-OFF.
+to MON and the Tracker group to OFF.
 
-A track with no recorded WAV files that is set to MON will
-show OFF status.
+The Master bus has only MON/OFF status. Setting REC status
+for the Mixdown bus has the same effect as issuing the
+B<mixdown> command. (A C<start> command must be issued for
+mixdown to commence.)
 
 =head1 BUGS AND LIMITATIONS
 
-Several important functions including loop_enable and 
-everything JACK-related are available only through 
+Some functions including C<loop_enable> C<solo>/C<all>,
+C<jack>/C<nojack>, C<stereo>/C<mono> are available only as
 text commands. 
 
-setpos commands cause a long engine delay when 
-JACK is used.
+Ecasound parameter controllers may be applied through
+Ecasound-IAM commands, but are not supported by Nama and the
+settings are not stored by the C<save> command.
 
-GUI volume sliders are linear scaled.
+The GUI interface appears able to apply controllers, however
+these settings have no effect.
 
 =head1 EXPORT
 
@@ -6014,6 +6098,8 @@ CPAN, for the distribution.
 Pull source code using this command: 
 
 C<git clone git://github.com/bolangi/nama.git>
+
+Build instructions are contained in the F<README> file.
 
 =head1 AUTHOR
 

@@ -13,3 +13,7 @@ Selected revision history for Perl extension Audio::Ecasound::Multitrack
                         - stereo/mono commands to set track width 
                         - solo/nosolo commands for selective listening 
                         - long text output displays in pager
+0.98  Mon Jan 6, 2009   - pager fixes
+                        - rewritten man pages
+                        - README contains instructions
+                          for building from sources

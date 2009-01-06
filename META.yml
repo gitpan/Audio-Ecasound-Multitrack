@@ -1,5 +1,5 @@
 ---
-abstract: ~
+abstract: Lightweight recorder/mixer application
 author:
   - 'Joel Roth, <joelz@pobox.com>'
 distribution_type: module
@@ -30,4 +30,4 @@ requires:
   Time::HiRes: 0
   Tk: 0
   perl: 5.8.0
-version: 0.978
+version: 0.98
