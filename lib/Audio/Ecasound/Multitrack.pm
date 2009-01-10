@@ -9,7 +9,7 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.981';
+our $VERSION = '0.982';
 our $ABSTRACT = 'Lightweight multitrack recorder/mixer';
 
 print <<BANNER;
@@ -5695,11 +5695,11 @@ vol: _vol end { 1 }
 # but don't see "Bad grammar!" message when P::RD fails
 # to process the grammar
 
-open SAVERR, ">&STDERR";
-open STDERR, ">/dev/null" or die "couldn't redirect IO";
+#open SAVERR, ">&STDERR";
+#open STDERR, ">/dev/null" or die "couldn't redirect IO";
 $parser = new Parse::RecDescent ($grammar) or croak "Bad grammar!\n";
-close STDERR;
-open STDERR, ">&SAVERR";
+#close STDERR;
+#open STDERR, ">&SAVERR";
 
 @help_topic = ( undef, qw(   
 					project
