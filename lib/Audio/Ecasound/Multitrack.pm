@@ -9,7 +9,7 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.98';
+our $VERSION = '0.981';
 our $ABSTRACT = 'Lightweight multitrack recorder/mixer';
 
 print <<BANNER;
@@ -71,6 +71,7 @@ our (
 	@help_topic,    # array of help categories
 	%help_topic,    # help text indexed by topic
 	$use_pager,     # display lengthy output data using pager
+	$text,          # Text::Format object
 
 	$ui, # object providing class behavior for graphic/text functions
 
@@ -152,9 +153,16 @@ our (
 	@effects,		# static effects information (parameters, hints, etc.)
 	%effect_i,		# an index , pn:amp -> effect number
 	%effect_j,      # an index , amp -> effect number
+	@effects_help,  # one line per effect, for text search
 
 	@ladspa_sorted, # ld
-	%effects_ladspa,# an index
+	%effects_ladspa, # parsed data from analyseplugin 
+	%effects_ladspa_file, 
+					# get plugin filename from Plugin Unique ID
+	%ladspa_unique_id, 
+					# get plugin unique id from plugin label
+	%ladspa_label,  # get plugin label from unique id
+	%ladspa_help,   # plugin_label => analyseplugin output
 	$e,				# the name of the variable holding
 					# the Ecasound engine object.
 					
@@ -405,9 +413,17 @@ our (
 
 						@effects		
 						%effect_i	
+						%effect_j	
 						%e_bound
 						@ladspa_sorted
-						%effects_ladspa		 );
+						%effects_ladspa	
+						%effects_ladspa_file
+						%ladspa_unique_id
+						%ladspa_label
+						%ladspa_help
+						@effects_help
+						);
+					
 
 
 @effects_dynamic_vars = qw(
@@ -496,10 +512,10 @@ sub mainloop {
 	$ui->loop;
 }
 sub status_vars {
-	serialize -class => 'Audio::Ecasound::Multitrack', -vars => \@status_vars;
+	serialize( -class => 'Audio::Ecasound::Multitrack', -vars => \@status_vars);
 }
 sub config_vars {
-	serialize -class => 'Audio::Ecasound::Multitrack', -vars => \@config_vars;
+	serialize( -class => 'Audio::Ecasound::Multitrack', -vars => \@config_vars);
 }
 
 sub discard_object {
@@ -664,6 +680,7 @@ sub prepare {
 
 	prepare_static_effects_data() unless $opts{e};
 
+
 	#print "keys effect_i: ", join " ", keys %effect_i;
 	#map{ print "i: $_, code: $effect_i{$_}->{code}\n" } keys %effect_i;
 	#die "no keys";	
@@ -801,6 +818,7 @@ sub list_projects {
 	my $cmd = "ls ". project_root();
 	print system $cmd;
 }
+sub list_plugins {}
 		
 sub load_project {
 	$debug2 and print "&load_project\n";
@@ -1017,13 +1035,13 @@ sub initialize_rules {
 		name			=>  'multi', 
 		target			=>  'REC',
 		chain_id 		=>	sub{ my $track = shift; "M".$track->n },
-		input_type		=>  'device', # raw
+		input_type		=>  'cooked', 
 		input_object	=>  sub{ my $track = shift; "loop," .  $track->n},
 		output_type		=>  'device',
 		output_object	=>  'multi',
 		pre_output		=>	sub{ my $track = shift; $track->pre_multi},
 		condition 		=> sub { my $track = shift; 
-								return "satisfied" if $track->ch_m; } ,
+								return "satisfied" if $track->source; } ,
 		status			=>  0,
 	);
 
@@ -1801,6 +1819,7 @@ sub add_effect {
 	my %p 			= %{shift()};
 	my $n 			= $p{chain};
 	my $code 			= $p{type};
+
 	my $parent_id = $p{parent_id};  
 	my $id		= $p{cop_id};   # initiates restore
 	my $parameter		= $p{parameter}; 
@@ -1905,7 +1924,7 @@ sub pager {
 	my ($screen_lines, $columns) = split " ", qx(stty size);
 	my $line_count = 0;
 	map{ $line_count += $_ =~ tr(\n)(\n) } @output;
-	if ( $use_pager and $line_count > $screen_lines ) { 
+	if ( $use_pager and $line_count > $screen_lines - 2) { 
 		my $fh = File::Temp->new();
 		my $fname = $fh->filename;
 		print $fh @output;
@@ -1913,6 +1932,7 @@ sub pager {
 	} else {
 		print @output;
 	}
+	print "\n\n";
 }
 sub file_pager {
 	$debug2 and print "&file_pager\n";
@@ -2269,11 +2289,50 @@ sub apply_op {
 	map{apply_op($_)} @owns;
 
 }
-## static effects data
+
+sub prepare_effects_help {
+
+	# presets
+	map{	s/^.*? //; 				# remove initial number
+					$_ .= "\n";				# add newline
+					my ($id) = /(pn:\w+)/; 	# find id
+					s/,/, /g;				# to help line breaks
+					push @effects_help,    $_;  #store help
+
+				}  split "\n",eval_iam("preset-register");
+
+	# LADSPA
+	my $label;
+	map{ 
+
+		if (  my ($_label) = /-(el:\w+)/  ){
+				$label = $_label;
+				s/^\s+/ /;				 # trim spaces 
+				s/'//g;     			 # remove apostrophes
+				$_ .="\n";               # add newline
+				push @effects_help, $_;  # store help
+
+		} else { 
+				# replace leading number with LADSPA Unique ID
+				s/^\d+/$ladspa_unique_id{$label}/;
+
+				s/\s+$/ /;  			# remove trailing spaces
+				substr($effects_help[-1],0,0) = $_; # join lines
+				$effects_help[-1] =~ s/,/, /g; # 
+				$effects_help[-1] =~ s/,\s+$//;
+				
+		}
+
+	} reverse split "\n",eval_iam("ladspa-register");
 
 
-
-# @ladspa_sorted # 
+#my @lines = reverse split "\n",eval_iam("ladspa-register");
+#pager( scalar @lines, $/, join $/,@lines);
+	
+	#my @crg = map{s/^.*? -//; $_ .= "\n" }
+	#			split "\n",eval_iam("control-register");
+	#pager (@lrg, @prg); exit;
+}
 
 sub prepare_static_effects_data{
 	
@@ -2299,6 +2358,7 @@ sub prepare_static_effects_data{
 		get_ladspa_hints();
 		integrate_ladspa_hints();
 		sort_ladspa_effects();
+		prepare_effects_help();
 		serialize (
 			-file => $effects_cache, 
 			-vars => \@effects_static_vars,
@@ -2522,25 +2582,23 @@ sub get_ladspa_hints{
 	$ENV{LADSPA_PATH} or local $ENV{LADSPA_PATH}='/usr/lib/ladspa';
 	my @dirs =  split ':', $ENV{LADSPA_PATH};
 	my $data = '';
+	my %seen = ();
+	my @plugins;
 	for my $dir (@dirs) {
 		opendir DIR, $dir or carp qq(can't open LADSPA dir "$dir" for read: $!\n);
-		my @plugins = grep{ /\.so$/ } readdir DIR;
-		$data .= join "", map { `analyseplugin $_` } @plugins;
+	
+		push @plugins,  
+			grep{ /\.so$/ and ! $seen{$_} and ++$seen{$_}} readdir DIR;
 		closedir DIR;
-	}
-	# print $data; exit;
-	my @plugin_stanzas = split "\n\n\n", $data;
-	# print scalar @plugin_stanzas; exit;
-	# print $data;
+	};
+	#pager join $/, @plugins;
 
-	# print "@plugins"; exit;
-	# | perl -ne 'chomp; s/$ENV{LADSPA_PATH}//; system qq(analyseplugin $_)'
-	my $ladspa_sample_rate = 44100; # for sample-rate dependent effect
-	use Data::Dumper;
-
+	# use these regexes to snarf data
+	
 	my $pluginre = qr/
-	Plugin\ Name: \s+ "([^"]+)" \s+
-	Plugin\ Label:\s+ "([^"]+)" \s+
+	Plugin\ Name:       \s+ "([^"]+)" \s+
+	Plugin\ Label:      \s+ "([^"]+)" \s+
+	Plugin\ Unique\ ID: \s+ (\d+)     \s+
 	[^\x00]+(?=Ports) 		# swallow maximum up to Ports
 	Ports: \s+ ([^\x00]+) 	# swallow all
 	/x;
@@ -2550,44 +2608,58 @@ sub get_ladspa_hints{
 	\s+
 	(.+)        # rest
 	/x;
+		
+	my $i;
+
+	for my $file (@plugins){
+		my @stanzas = split "\n\n", qx(analyseplugin $file);
+		for my $stanza (@stanzas) {
+
+			my ($plugin_name, $plugin_label, $plugin_unique_id, $ports)
+			  = $stanza =~ /$pluginre/ 
+				or carp "*** couldn't match plugin stanza $stanza ***";
 
 
+			#print "$1\n$2\n$3"; exit;
 
-	for my $stanza (@plugin_stanzas) {
+			my @lines = split "\n",$ports;
+		#	print join "\n",@lines; exit;
+			my @params;  # data
 
-		$stanza =~ /$pluginre/ or carp "*** couldn't match plugin stanza $stanza ***";
+			my @names;
+			for my $p (@lines) {
+				next if $p =~ /^\s*$/;
+				$p =~ /$paramre/;
+				my ($name, $rest) = ($1, $2);
+				my ($dir, $type, $range, $default, $hint) = 
+					split /\s*,\s*/ , $rest, 5;
+				#print join "|",$dir, $type, $range, $default, $hint;
+				next if $type eq q(audio);
+				my %p;
+				$p{name} = $name;
+				$p{dir} = $dir;
+				$p{hint} = $hint;
+				my ($beg, $end, $default_val, $resolution) 
+					= range($name, $range, $default, $hint);
+				$p{begin} = $beg;
+				$p{end} = $end;
+				$p{default} = $default_val;
+				$p{resolution} = $resolution;
+				push @params, { %p };
+			}
 
-		my ($plugin_name, $plugin_label, $ports) = ($1, $2, $3);
-		#print "$1\n$2\n$3"; exit;
-
-		 my @lines = split "\n",$ports;
-	#	print join "\n",@lines; exit;
-		my @params;  # data
-
-		my @names;
-		for my $p (@lines) {
-			next if $p =~ /^\s*$/;
-			$p =~ /$paramre/;
-			my ($name, $rest) = ($1, $2);
-			my ($dir, $type, $range, $default, $hint) = split /\s*,\s*/ , $rest, 5;
-			#print join "|",$dir, $type, $range, $default, $hint;
-			next if $type eq q(audio);
-			my %p;
-			$p{name} = $name;
-			$p{dir} = $dir;
-			$p{hint} = $hint;
-			my ($beg, $end, $default_val, $resolution) = range($name, $range, $default, $hint);
-			$p{begin} = $beg;
-			$p{end} = $end;
-			$p{default} = $default_val;
-			$p{resolution} = $resolution;
-			push @params, { %p };
-		}
-
-		$plugin_label = "el:" . $plugin_label;
-		$effects_ladspa {$plugin_label}->{params} = [ @params ];
-		$effects_ladspa {$plugin_label}->{count} = scalar @params;
-		$effects_ladspa {$plugin_label}->{display} = 'scale';
+			$plugin_label = "el:" . $plugin_label;
+			$ladspa_help{$plugin_label} = $stanza;
+			$effects_ladspa_file{$plugin_unique_id} = $file;
+			$ladspa_unique_id{$plugin_label} = $plugin_unique_id; 
+			$ladspa_label{$plugin_unique_id} = $plugin_label;
+			$effects_ladspa{$plugin_label}->{name}  = $plugin_name;
+			$effects_ladspa{$plugin_label}->{id}    = $plugin_unique_id;
+			$effects_ladspa{$plugin_label}->{params} = [ @params ];
+			$effects_ladspa{$plugin_label}->{count} = scalar @params;
+			$effects_ladspa{$plugin_label}->{display} = 'scale';
+		}	#	pager( join "\n======\n", @stanzas);
+		#last if ++$i > 10;
 	}
 
 	$debug and print yaml_out(\%effects_ladspa); 
@@ -4089,6 +4161,7 @@ sub loop {
     my $term = new Term::ReadLine 'Ecaound/Nama';
 	$term->tkRunning(1);
     my $prompt = "nama ('h' for help)> ";
+    #my $prompt = "nama> ";
     $OUT = $term->OUT || \*STDOUT;
 	while (1) {
     my ($user_input) = $term->readline($prompt) ;
@@ -4141,6 +4214,14 @@ sub marker {};
 ## by definitions that follow
 
 use Carp;
+use Text::Format;
+$text = new Text::Format {
+	columns 		=> 65,
+	firstIndent 	=> 0,
+	bodyIndent		=> 0,
+	tabstop			=> 4,
+};
+
 sub new { my $class = shift; return bless { @_ }, $class; }
 
 sub show_versions {
@@ -4174,6 +4255,7 @@ sub loop {
 
 	package Audio::Ecasound::Multitrack;
     my $prompt = "nama ('h' for help)> ";
+    #my $prompt = "nama> ";
 	$term = new Term::ReadLine("Ecasound/Nama");
 	my $attribs = $term->Attribs;
 	$term->callback_handler_install($prompt, \&Audio::Ecasound::Multitrack::Text::process_line);
@@ -4309,8 +4391,8 @@ sub command_process {
 			my $result = eval_iam($user_input);
 			pager( $result );  
 		} else {
-			$debug and print "Passing to parser\n", 
-			$_, $/;
+			if ($cmd eq 'h') { s/h/help/; }
+			$debug and print "Passing to parser\n", $_, $/;
 			#print 1, ref $parser, $/;
 			#print 2, ref $Audio::Ecasound::Multitrack::parser, $/;
 			# both print
@@ -4366,7 +4448,7 @@ sub helpline {
 }
 sub helptopic {
 	my $index = shift;
-	$index =~ /^\d+$/ and $index = $help_topic[$index];
+	$index =~ /^(\d+)$/ and $index = $help_topic[$index];
 	my @output;
 	push @output, "\n-- ", ucfirst $index, " --\n\n";
 	push @output, $help_topic{$index}, $/;
@@ -4386,33 +4468,83 @@ IAM
 		@output = helptopic($name);
 	} elsif ($name == 10){
 		@output = map{ helptopic $_ } @help_topic;
-	} elsif ( $name =~ /^\d+$/ ){
+	} elsif ( $name =~ /^(\d+)$/ and $1 < 20  ){
 		@output = helptopic($name)
-	} elsif ( $commands{$name}){
+	} elsif ( $commands{$name} ){
 		@output = helpline($name)
 	} else {
 		my %helped = (); 
+		my @help = ();
 		map{  
 			my $cmd = $_ ;
 			if ($cmd =~ /$name/){
-				push( @output, helpline($cmd));
+				push( @help, helpline($cmd));
 				$helped{$cmd}++ ;
 			}
-			if ( grep{ /$name/ } split " ", $commands{$cmd}->{short} 
-					and ! $helped{$cmd}){
-				push @output, helpline($cmd) 
+			if ( ! $helped{$cmd} and
+					grep{ /$name/ } split " ", $commands{$cmd}->{short} ){
+				push @help, helpline($cmd) 
 			}
 		} keys %commands;
-	}
-	# e.g. help tap_reverb
-	if ( $effects_ladspa{"el:$name"}) {
- 		push @output, "$name is the code for the following LADSPA effect:\n";
-    	push @output, qx(analyseplugin $name);
+		if ( @help ){ push @output, 
+			qq("$name" matches the following commands:\n\n), @help;
+		}
 	}
 	Audio::Ecasound::Multitrack::pager( @output ); 
+	
+}
+sub help_effect {
+	my $input = shift;
+	print "input: $input\n";
+	# e.g. help tap_reverb    
+	#      help 2142
+	#      help var_chipmunk # preset
+
+
+	if ($input !~ /\D/){ # all digits
+		$input = $ladspa_label{$input}
+			or print("$input: effect not found.\n\n"), return;
+	}
+	if ( $effect_i{$input} ) {} # do nothing
+	elsif ( $effect_j{$input} ) { $input = $effect_j{$input} }
+	else { print("$input: effect not found.\n\n"), return }
+	if ($input =~ /pn:/) {
+		print grep{ /$input/  } @effects_help;
+	}
+	elsif ( $input =~ /el:/) {
+	
+	my @output = $ladspa_help{$input};
+	print "label: $input\n";
+	Audio::Ecasound::Multitrack::pager( @output );
+	#print $ladspa_help{$input};
+	} else { 
+	print "$input: Ecasound effect. Type 'man ecasound' for details.\n";
+	}
 }
 
-# are these subroutines so different from what's in Core_subs.pl?
+
+sub find_effect {
+	my @keys = @_;
+	#print "keys: @keys\n";
+	#my @output;
+	my @matches = grep{ 
+		my $help = $_; 
+		my $didnt_match;
+		map{ $help =~ /\Q$_\E/i or $didnt_match++ }  @keys;
+		! $didnt_match; # select if no cases of non-matching
+	} @effects_help;
+	if ( @matches ){
+# 		push @output, <<EFFECT;
+# 
+# Effects matching "@keys" were found. The "pn:" prefix 
+# indicates an Ecasound preset. The "el:" prefix indicates
+# a LADSPA plugin. No prefix indicates an Ecasound chain
+# operator.
+# 
+# EFFECT
+	Audio::Ecasound::Multitrack::pager( $text->paragraphs(@matches) , "\n" );
+	} else { print "No matching effects.\n\n" }
+}
 
 package Audio::Ecasound::Multitrack;
 
@@ -4455,6 +4587,14 @@ sub t_add_ctrl {
 }
 sub t_add_effect {
 	my ($code, $values)  = @_;
+
+	# allow use of LADSPA unique ID
+	
+    if ($code !~ /\D/){ # i.e. $code is all digits
+		$code = $ladspa_label{$code} 
+			or carp("$code: LADSPA plugin not found.  Aborting.\n"), return;
+	}
+		
 	if ( $effect_i{$code} ) {} # do nothing
 	elsif ( $effect_j{$code} ) { $code = $effect_j{$code} }
 	else { warn "effect code not found: $code\n"; return }
@@ -4479,9 +4619,13 @@ $debug2 and print "Reading grammar\n";
 $commands_yml = <<'YML';
 ---
 help:
-  short: h
   what: display help 
   parameters: topic or command name 
+  type: general
+list_plugin:
+  short: lp
+  what: output of analyseplugin
+  parameter: LADSPA plugin name or unique id
   type: general
 exit:
   short: quit q
@@ -4576,6 +4720,16 @@ monitor_channel:
   what: set track output channel number
   smry: set track output channel
   parameters: number
+source:
+  type: track
+  what: set track source
+  short: src from r in
+  parameters: JACK client name or soundcard channel number 
+send:
+  type: track
+  what: set auxilary track destination
+  short: to m out aux
+  parameters: JACK client name or soundcard channel number 3 or higher. (Soundcard channels 1 and 2 are reserved for the mixer.)
 source:
   type: track
   what: set track source
@@ -4776,11 +4930,11 @@ add_ctrl:
   short: acl
 add_effect:
   type: effect
-  what: add effect (Ecasound, Ecasound preset or LADSPA) to selected track
+  what: add effect to current track
   short: fxa afx
   smry: add effect
-  parameters: code param1 param2,... paramn
-  example: fxa amp 6 (LADSPA Simple amp 6dB gain),\n         fxa var_dali (preset var_dali),\n         fxa pn:var_tape_stretched (explicit el: or pn: prefix optional)\n
+  parameters: effect_label param1 param2,... paramn
+  example: fxa amp 6 (LADSPA Simple amp 6dB gain); fxa pn:var_dali (preset var_dali) Note: no el: or pn: prefix is required
 modify_effect:
   type: effect
   what: modify an effect parameter
@@ -4793,6 +4947,16 @@ remove_effect:
   short: fxr rfx
   parameters: effect_id1, effect_id2,...
   example: fxr V (remove effect V)
+help_effect:
+  type: help
+  short: hfx fxh hf he
+  parameters: label | unique_id
+  what: display analyseplugin output or one-line preset help
+find_effect:
+  type: help
+  short: ffx fxf ff fe
+  what: display one-line help for effects matching search strings
+  parameters: string1, string2,...
 ctrl_register:
   type: effect
   what: list Ecasound controllers
@@ -4919,16 +5083,17 @@ last: ('last' | '$' )
 dd: /\d+/
 name: /[\w:]+/
 name2: /[\w-]+/
+name3: /\S+/
 modifier: 'audioloop' | 'select' | 'reverse' | 'playat' | value
 nomodifiers: _nomodifiers end { $Audio::Ecasound::Multitrack::this_track->set(modifiers => ""); }
 end: /[;\s]*$/ 
-help: _help end { print $Audio::Ecasound::Multitrack::help_screen }
-help: _help 'yml' end { Audio::Ecasound::Multitrack::pager($Audio::Ecasound::Multitrack::commands_yml)}
-help: _help name2  { Audio::Ecasound::Multitrack::Text::help($item{name2}) }
+help_effect: _help_effect name end { Audio::Ecasound::Multitrack::Text::help_effect($item{name}) }
+find_effect: _find_effect name3(s) { Audio::Ecasound::Multitrack::Text::find_effect(@{$item{"name3(s)"}})}
 exit: _exit end { Audio::Ecasound::Multitrack::save_state(); exit }
 create_project: _create_project name end { Audio::Ecasound::Multitrack::t_create_project $item{name} }
 
 list_projects: _list_projects end { Audio::Ecasound::Multitrack::list_projects() }
+list_plugin: _list_plugin name end { Audio::Ecasound::Multitrack::list_plugin() }
 
 load_project: _load_project name end {
 	Audio::Ecasound::Multitrack::t_load_project( $item{name} )
@@ -5258,6 +5423,9 @@ ladspa_register: _ladspa_register end { Audio::Ecasound::Multitrack::pager( Audi
 preset_register: _preset_register end { Audio::Ecasound::Multitrack::pager( Audio::Ecasound::Multitrack::eval_iam("preset-register"))}
 ctrl_register: _ctrl_register end { Audio::Ecasound::Multitrack::pager( Audio::Ecasound::Multitrack::eval_iam("ctrl-register"))}
 project_name: _project_name end { print "project name: ", $Audio::Ecasound::Multitrack::project_name, $/ }
+help: _help 'yml' end { Audio::Ecasound::Multitrack::pager($Audio::Ecasound::Multitrack::commands_yml)}
+help: _help name2  { Audio::Ecasound::Multitrack::Text::help($item{name2}) }
+help: _help end { print $Audio::Ecasound::Multitrack::help_screen }
 
 
 command: add_ctrl
@@ -5279,6 +5447,7 @@ command: ecasound_stop
 command: engine_status
 command: erase_capture
 command: exit
+command: find_effect
 command: generate
 command: get_state
 command: getpos
@@ -5287,9 +5456,11 @@ command: group_off
 command: group_rec
 command: group_version
 command: help
+command: help_effect
 command: jack
 command: ladspa_register
 command: list_marks
+command: list_plugin
 command: list_projects
 command: list_versions
 command: load_project
@@ -5326,6 +5497,7 @@ command: remove_effect
 command: remove_mark
 command: remove_track
 command: save_state
+command: send
 command: set_track
 command: set_version
 command: setpos
@@ -5362,6 +5534,7 @@ _ecasound_stop: 'ecasound_stop' | 'S'
 _engine_status: 'engine_status' | 'egs'
 _erase_capture: 'erase_capture' | 'erase'
 _exit: 'exit' | 'quit' | 'q'
+_find_effect: 'find_effect' | 'ffx' | 'fxf' | 'ff' | 'fe'
 _generate: 'generate' | 'gen'
 _get_state: 'get_state' | 'recall' | 'restore' | 'retrieve'
 _getpos: 'getpos' | 'gp'
@@ -5369,10 +5542,12 @@ _group_mon: 'group_mon' | 'gmon' | 'M'
 _group_off: 'group_off' | 'goff' | 'Z'
 _group_rec: 'group_rec' | 'grec' | 'R'
 _group_version: 'group_version' | 'gn' | 'gver' | 'gv'
-_help: 'help' | 'h'
+_help: 'help'
+_help_effect: 'help_effect' | 'hfx' | 'fxh' | 'hf' | 'he'
 _jack: 'jack' | 'jackon' | 'jon'
 _ladspa_register: 'ladspa_register' | 'lrg'
 _list_marks: 'list_marks' | 'lm'
+_list_plugin: 'list_plugin' | 'lp'
 _list_projects: 'list_projects' | 'listp'
 _list_versions: 'list_versions' | 'lver' | 'lv'
 _load_project: 'load_project' | 'load'
@@ -5409,6 +5584,7 @@ _remove_effect: 'remove_effect' | 'fxr' | 'rfx'
 _remove_mark: 'remove_mark' | 'rmm'
 _remove_track: 'remove_track'
 _save_state: 'save_state' | 'keep' | 'k' | 'save'
+_send: 'send' | 'to' | 'm' | 'out' | 'aux'
 _set_track: 'set_track' | 'set'
 _set_version: 'set_version' | 'version' | 'n' | 'ver'
 _setpos: 'setpos' | 'sp'
@@ -5445,6 +5621,7 @@ ecasound_stop: _ecasound_stop end { 1 }
 engine_status: _engine_status end { 1 }
 erase_capture: _erase_capture end { 1 }
 exit: _exit end { 1 }
+find_effect: _find_effect end { 1 }
 generate: _generate end { 1 }
 get_state: _get_state end { 1 }
 getpos: _getpos end { 1 }
@@ -5453,9 +5630,11 @@ group_off: _group_off end { 1 }
 group_rec: _group_rec end { 1 }
 group_version: _group_version end { 1 }
 help: _help end { 1 }
+help_effect: _help_effect end { 1 }
 jack: _jack end { 1 }
 ladspa_register: _ladspa_register end { 1 }
 list_marks: _list_marks end { 1 }
+list_plugin: _list_plugin end { 1 }
 list_projects: _list_projects end { 1 }
 list_versions: _list_versions end { 1 }
 load_project: _load_project end { 1 }
@@ -5492,6 +5671,7 @@ remove_effect: _remove_effect end { 1 }
 remove_mark: _remove_mark end { 1 }
 remove_track: _remove_track end { 1 }
 save_state: _save_state end { 1 }
+send: _send end { 1 }
 set_track: _set_track end { 1 }
 set_version: _set_version end { 1 }
 setpos: _setpos end { 1 }
@@ -5756,7 +5936,7 @@ project_root: ~                  # replaced during first run
 
 # device selections
 
-# ALSA/OSS devices (JACK is handled differently)
+# ALSA/OSS devices
 
 mixer_out_device: consumer       # default mixer out target
 mixer_out_format: cd-stereo      
@@ -5768,7 +5948,7 @@ ecasound_globals: "-B auto -r -z:mixmode,sum -z:psr "
 
 # audio formats 
 
-mixer_out_format: cd-stereo      # wrong for JACK, but Ecasound fixes this
+mixer_out_format: cd-stereo
 mix_to_disk_format: cd-stereo
 raw_to_disk_format: 16,N,frequency
 
@@ -5777,9 +5957,6 @@ raw_to_disk_format: 16,N,frequency
 # indents _are_ significant in the lines below
 
 devices: 
-
-# ALSA/OSS
-
   multi:
     ecasound_id: alsa,ice1712
     input_format: 32-12
@@ -5788,14 +5965,10 @@ devices:
     ecasound_id: alsa,default   # alsa,hw:0 /dev/dsp
     input_format: cd-stereo
     output_format: cd-stereo
-
-# JACK
-
   jack_alsa: 
     ecasound_id: jack_alsa
     input_format: jack12
     output_format: jack10
-
   jack:
     ecasound_id: jack
     input_format: 32,N,frequency

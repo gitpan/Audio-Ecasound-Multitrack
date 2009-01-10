@@ -49,7 +49,9 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 						modifiers
 
 						jack_source
-						signal_select
+						jack_send
+						source_select
+						send_select
 						
 						);
 
@@ -111,7 +113,8 @@ sub new {
 					looping => undef, # do we repeat our sound sample
 
 					hide     => undef, # for 'Remove Track' function
-					signal_select => q(soundcard),
+					source_select => q(soundcard),
+					send_select => undef,
 
 					@_ 			}, $class;
 
@@ -148,7 +151,7 @@ sub input_object {
 }
 	
 # 	  elsif ( $source eq 'card' or $source eq 'c' ){
-# 		$track->set(signal_select => 'soundcard');
+# 		$track->set(source_select => 'soundcard');
 # 		$track->input;
 sub source {
 	my ($track, $source) = @_;
@@ -156,7 +159,7 @@ sub source {
 	if ( ! $source ){
 		if ( $Audio::Ecasound::Multitrack::jack_enable
 				and $track->jack_source 
-				and $track->signal_select eq 'jack'){
+				and $track->source_select eq 'jack'){
 			$track->jack_source 
 		} else { 
 			$track->input 
@@ -164,15 +167,41 @@ sub source {
 	} elsif ( $source =~ m(\D) ){
 		if ( $Audio::Ecasound::Multitrack::jack_enable ){
 			$track->set(jack_source => $source);
-			$track->set(signal_select => "jack");
+			$track->set(source_select => "jack");
 			$track->jack_source
 		} else {
-			print "Type 'jack' to enable JACK before connecting a client\n";
+			print "Type 'jack' before setting a JACK client\n";
 			$track->input;
 		} 
 	} else {  # must be numerical
 		$track->set(ch_r => $source);
-		$track->set(signal_select =>'soundcard');
+		$track->set(source_select =>'soundcard');
+		$track->input;
+	}
+} 
+sub send {
+	my ($track, $send) = @_;
+
+	if ( ! $send ){
+		if ( $Audio::Ecasound::Multitrack::jack_enable
+				and $track->jack_send 
+				and $track->send_select eq 'jack'){
+			$track->jack_send 
+		} else { 
+			$track->input 
+		}
+	} elsif ( $send =~ m(\D) ){
+		if ( $Audio::Ecasound::Multitrack::jack_enable ){
+			$track->set(jack_send => $send);
+			$track->set(send_select => "jack");
+			$track->jack_send
+		} else {
+			print "Type 'jack' before setting a JACK client\n";
+			$track->input;
+		} 
+	} else {  # must be numerical
+		$track->set(ch_m => $send);
+		$track->set(send_select =>'soundcard');
 		$track->input;
 	}
 } 
@@ -208,7 +237,9 @@ sub current {	 # depends on ewf status
 	# here comes the logic that enables .ewf support, 
 	# using conditional $track->delay or $track->length or $track->start_position ;
 	# to decide whether to rewrite file name from .wav to .ewf
-	
+
+# ewf is deprecated!
+
 		no warnings;
 		my $filename = $track->targets->{ $track->monitor_version } ;
 		use warnings;
@@ -286,18 +317,15 @@ sub current_version {
 sub monitor_version {
 	my $track = shift;
 	my $group = $Audio::Ecasound::Multitrack::Group::by_name{$track->group};
-	my $version; 
 	if ( $track->active 
 			and grep {$track->active == $_ } @{$track->versions}) 
-		{ $version = $track->active }
+		{ return $track->active }
 	elsif (	$group->version
 			and grep {$group->version  == $_ } @{$track->versions})
-		{ $version = $group->version }
-#	elsif (	$track->last) #  and ! $track->active and ! $group->version )
-#		{ $version = $track->last }
-	else { } # carp "no version to monitor!\n" 
-	# print "monitor version: $version\n";
-	$version;
+		{ return $group->version }
+	elsif (	$track->last and ! $track->active and ! $group->version )
+		{ $track->last }
+	else { undef }
 }
 
 sub rec_status {
@@ -427,7 +455,9 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 						modifiers
 
 						jack_source
-						signal_select
+						jack_send
+						source_select
+						send_select
 						
 						);
 
