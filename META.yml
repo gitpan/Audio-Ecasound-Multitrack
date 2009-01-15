@@ -1,5 +1,5 @@
 ---
-abstract: Nama - Ecasound-based recorder/mixer
+abstract: Nama - Ecasound based recorder-mixer
 author:
   - 'Joel Roth, <joelz@pobox.com>'
 distribution_type: module
@@ -30,4 +30,4 @@ requires:
   Time::HiRes: 0
   Tk: 0
   perl: 5.8.0
-version: 0.991
+version: 0.992
