@@ -9,7 +9,7 @@ no warnings;
 
 BEGIN{ 
 
-our $VERSION = '0.993';
+our $VERSION = '0.994';
 
 print <<BANNER;
 
@@ -1513,7 +1513,7 @@ WARN
 		push  @input_chains, 
 			"-a:"
 			. join(",",@chain_ids)
-			. " -i:jack_auto,$client -f:$format";
+			. " -f:$format -i:jack_auto,$client";
 	}
 		
 	##### Setting files as inputs (used by mon_setup)
@@ -1574,7 +1574,7 @@ WARN
 		push  @output_chains, 
 			"-a:"
 			. join(",",@chain_ids)
-			. " -o:jack_auto,$client -f:$format";
+			. " -f:$format -o:jack_auto,$client";
 	}
 		
 	### Setting loops as outputs 
