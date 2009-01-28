@@ -8,6 +8,8 @@ local $debug = 0;
 #use Exporter qw(import);
 #our @EXPORT_OK = qw(track);
 use Audio::Ecasound::Multitrack::Assign qw(join_path);
+#use Memoize qw(memoize unmemoize);
+#memoize('rec_status');
 use Carp;
 use IO::All;
 use vars qw($n %by_name @by_index %track_names);
@@ -162,10 +164,10 @@ sub group_last {
 
 sub current {	 # depends on ewf status
 	my $track = shift;
-	my $last = $track->group_last;
+	my $last = $track->current_version;
 	#print "last found is $last\n"; 
 	if 	($track->rec_status eq 'REC'){ 
-		return $track->name . '_' . ++$last . '.wav'}
+		return $track->name . '_' . $last . '.wav'}
 	elsif ( $track->rec_status eq 'MON'){ 
 
 	# here comes the logic that enables .ewf support, 
@@ -198,10 +200,10 @@ sub full_wav_path {  # independent of ewf status
 
 sub current_wav {	# independent of ewf status
 	my $track = shift;
-	my $last = $track->group_last;
+	my $last = $track->current_version;
 	#print "last found is $last\n"; 
 	if 	($track->rec_status eq 'REC'){ 
-		return $track->name . '_' . ++$last . '.wav'}
+		return $track->name . '_' . $last . '.wav'}
 	elsif ( $track->rec_status eq 'MON'){ 
 		no warnings;
 		my $filename = $track->targets->{ $track->monitor_version } ;
@@ -238,9 +240,11 @@ sub write_ewf {
 
 sub current_version {	
 	my $track = shift;
-	my $last = $track->group_last;
+	my $last = $Audio::Ecasound::Multitrack::use_group_numbering 
+					? $track->group_last
+					: $track->last;
 	my $status = $track->rec_status;
-	#print "last: $last status: $status\n";
+	#$debug and print "last: $last status: $status\n";
 	if 	($track->rec_status eq 'REC'){ return ++$last}
 	elsif ( $track->rec_status eq 'MON'){ return $track->monitor_version } 
 	else { return undef }
@@ -249,31 +253,38 @@ sub current_version {
 sub monitor_version {
 	my $track = shift;
 	my $group = $Audio::Ecasound::Multitrack::Group::by_name{$track->group};
-	my $version; 
-	if ( $track->active 
-			and grep {$track->active == $_ } @{$track->versions}) 
-		{ $version = $track->active }
-	elsif (	$group->version
-			and grep {$group->version  == $_ } @{$track->versions})
-		{ $version = $group->version }
-#	elsif (	$track->last) #  and ! $track->active and ! $group->version )
-#		{ $version = $track->last }
-	else { } # carp "no version to monitor!\n" 
-	# print "monitor version: $version\n";
-	$version;
+	return $track->active if $track->active;
+	return $group->version if $group->version 
+				and grep {$group->version  == $_ } @{$track->versions};
+	return undef if $group->version;
+	$track->last;
 }
+# sub monitor_version {
+# 	my $track = shift;
+# 	$track->active ? $track->active : $track->last;
+# }
 
-sub rec_status {
+sub jack_client {
 	my $track = shift;
+	my $client = $track->source;
+	$client if $client =~ /\D/; 
+}
+	
+sub rec_status {
+	$Audio::Ecasound::Multitrack::debug2 and print "&rec_status\n";
+	my $track = shift;
+	my $monitor_version = $track->monitor_version;
 	# print "rec status track: ", $track->name, $/;
 	my $group = $Audio::Ecasound::Multitrack::Group::by_name{$track->group};
+	my $client = $track->jack_client;
 
-		
 	return 'OFF' if 
 		$group->rw eq 'OFF'
 		or $track->rw eq 'OFF'
-		or $track->rw eq 'MON' and ! $track->monitor_version
-		or $track->hide;
+		or $track->rw eq 'MON' and ! $monitor_version
+#		or $track->hide
+  		or $client
+  			and ! Audio::Ecasound::Multitrack::jack_client($client,q(output)) 
 		# ! $track->full_path;
 		;
 	if( 	
@@ -282,10 +293,10 @@ sub rec_status {
 		) {
 
 		return 'REC'; # if $track->ch_r;
-		#return 'MON' if $track->monitor_version;
+		#return 'MON' if $monitor_version;
 		#return 'OFF';
 	}
-	else { return 'MON' if $track->monitor_version;
+	else { return 'MON' if $monitor_version;
 			return 'OFF';	
 	}
 }
@@ -371,7 +382,7 @@ sub source { # command for setting, showing track source
 	my ($track, $source) = @_;
 
 	if ( ! $source ){
-		if ( Audio::Ecasound::Multitrack::jackd_running()
+		if ( $Audio::Ecasound::Multitrack::jack_running
 				and $track->jack_source 
 				and $track->source_select eq 'jack'){
 			$track->jack_source 
@@ -379,9 +390,13 @@ sub source { # command for setting, showing track source
 			$track->input 
 		}
 	} elsif ( $source =~ m(\D) ){
-		if ( Audio::Ecasound::Multitrack::jackd_running() ){
+		if ( $Audio::Ecasound::Multitrack::jack_running ){
 			$track->set(jack_source => $source);
 			$track->set(source_select => "jack");
+			my $name = $track->name;
+			print <<CLIENT if ! Audio::Ecasound::Multitrack::jack_client($source, 'output');
+JACK client "$source" is not found, track "$name" is OFF
+CLIENT
 			$track->jack_source
 		} else {
 			print "JACK server not running.\n";
@@ -394,24 +409,54 @@ sub source { # command for setting, showing track source
 	}
 } 
 
+sub set_source { # called from parser 
+	my $track = shift;
+	my $source = shift;
+	if ($source eq 'null'){
+		$track->set(group => 'null');
+		return
+	}
+	my $old_source = $track->source;
+	my $new_source = $track->source($source);
+	my $object = input_object( $new_source );
+	if ( $old_source  eq $new_source ){
+		print $track->name, ": input unchanged, $object\n";
+	} else {
+		print $track->name, ": input set to $object\n";
+	}
+}
+
+sub set_version {
+	my ($track, $n) = @_;
+	my $name = $track->name;
+	if ($n == 0){
+		print "$name: following latest version\n";
+		$track->set(active => $n)
+	} elsif ( grep{ $n == $_ } @{$track->versions} ){
+		print "$name: anchoring version $n\n";
+		$track->set(active => $n)
+	} else { 
+		print "$name: version $n does not exist, skipping.\n"
+	}
+}
+
 sub set_send {
 	my ($track, $output) = @_;
 	my $old_send = $track->send;
 	my $new_send = $track->send($output);
 	my $object = $track->output_object;
 	if ( $old_send  eq $new_send ){
-		print $track->name, ": send unchanged, $object\n";
+		print $track->name, ": send unchanged, ",
+			( $object ?  $object : 'off'), "\n";
 	} else {
-		print $track->name, ": auxiliary output to ",
-		($object ? $object : 'off'),
-		"\n";
+		print $track->name, ": aux output ",
+		($object ? "to $object" : 'is off.'), "\n";
 	}
 }
 sub send {
 	my ($track, $send) = @_;
-
 	if ( ! defined $send ){
-		if ( Audio::Ecasound::Multitrack::jackd_running()
+		if ( $Audio::Ecasound::Multitrack::jack_running
 				and $track->jack_send 
 				and $track->send_select eq 'jack'){
 			$track->jack_send 
@@ -420,23 +465,21 @@ sub send {
 				?  $track->aux_output
 				:  undef
 		}
-	} elsif (lc $send eq 'off'  or $send == 0) { 
+	} elsif ( $send eq 'off'  or $send eq '0') { 
 		$track->set(send_select => 'off');
 		undef;
 	} elsif ( $send =~ m(\D) ){ ## non-digit, indicating jack client name
-		if ( Audio::Ecasound::Multitrack::jackd_running() ){
+		if ( $Audio::Ecasound::Multitrack::jack_running ){
 			$track->set(jack_send => $send);
-			$track->set(send_select => "jack");
+			$track->set(send_select => 'jack');
 			$track->jack_send
 		} else {
-print q(: auxilary send to JACK client specified, but jackd is not running.
-Skipping.
-);
+			print $track->name, 
+			": cannot send to JACK client. jackd is not running\n";
 			$track->aux_output;
 		} 
 	} else {  # must be numerical
-		if ( $send <= 2){ 
-
+		if ( $send > 2){ 
 			$track->set(ch_m => $send);
 			$track->set(send_select =>'soundcard');
 		} else { 
@@ -452,13 +495,13 @@ sub send_output {  # for io lists / chain setup
 					
 	my $track = shift;
 	if ( $track->send_select eq 'soundcard' ){ 
-		if (Audio::Ecasound::Multitrack::jackd_running() ){
+		if ($Audio::Ecasound::Multitrack::jack_running ){
 			[qw(jack system)]
 		} else {
 			['device', $Audio::Ecasound::Multitrack::playback_device ]
 		}
 	} elsif ( $track->send_select eq 'jack' ) {
-		if ( Audio::Ecasound::Multitrack::jackd_running() ){
+		if ( $Audio::Ecasound::Multitrack::jack_running ){
 			['jack', $track->send]
 		} else {
 			print $track->name, 
@@ -480,7 +523,7 @@ sub source_input { # for io lists / chain setup
 		Audio::Ecasound::Multitrack::input_type_object()
 	}
 	elsif ( $track->source_select eq 'jack' ){
-		if (Audio::Ecasound::Multitrack::jackd_running() ){
+		if ($Audio::Ecasound::Multitrack::jack_running ){
 			['jack', $track->source ]
 		} else { 
 			print $track->name, ": no JACK client found\n";
@@ -540,7 +583,36 @@ sub set_off {
 	print $track->name, ": set to OFF\n";
 }
 
+sub normalize {
+	my $track = shift;
+	if ($track->rec_status ne 'MON'){
+		print $track->name, ": You must set track to MON before normalizing, skipping.\n";
+		return;
+	} 
+	# track version will exist if MON status
+	my $cmd = 'ecanormalize ';
+	$cmd .= $track->full_path;
+	print "executing: $cmd\n";
+	system $cmd;
+}
+sub fixdc {
+	my $track = shift;
+	if ($track->rec_status ne 'MON'){
+		print $track->name, ": You must set track to MON before fixing dc level, skipping.\n";
+		return;
+	} 
+
+	my $cmd = 'ecafixdc ';
+	$cmd .= $track->full_path;
+	print "executing: $cmd\n";
+	system $cmd;
+}
+
+	
+	
+
 # subclass
+
 
 package Audio::Ecasound::Multitrack::SimpleTrack; # used for Master track
 our @ISA = 'Audio::Ecasound::Multitrack::Track';

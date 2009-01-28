@@ -9,6 +9,7 @@ use IO::All;
 use Data::YAML;
 use Data::YAML::Reader;
 use Data::YAML::Writer;
+use Data::Rmap qw(:all);
 use Storable;
 
 require Exporter;
@@ -51,8 +52,9 @@ our @EXPORT = qw(
 package Audio::Ecasound::Multitrack;
 our ($debug, $debug2, $debug3);
 package Audio::Ecasound::Multitrack::Assign;
-my $yw = Data::YAML::Writer->new;
-my $yr = Data::YAML::Reader->new;
+use vars qw($yw $yr);
+$yw = Data::YAML::Writer->new;
+$yr = Data::YAML::Reader->new;
 
 use Carp;
 
@@ -237,7 +239,7 @@ sub serialize {
 # more YAML adjustments 
 #
 # restore will break if a null field is not converted to '~'
-
+=comment
 		if ( ! $h{-storable} ){ 
 			if ( $sigil eq q($) ){
 				my $val = eval( $value );
@@ -251,6 +253,7 @@ sub serialize {
 				$value = %val ? $value : $tilde; 
 			}
 		}
+=cut
 			
 		 my $eval_string =  q($state{')
 							. $identifier
@@ -259,7 +262,7 @@ sub serialize {
 							. $value;
 	$debug and print "attempting to eval $eval_string\n";
 	eval($eval_string) or $debug  and print 
-		"eval returned zero or failed ($!\n)";
+		"eval returned zero or failed ($@\n)";
 	} @vars;
 	# my $result1 = store \%state, $file; # old method
 	if ( $h{-file} ) {
@@ -268,6 +271,9 @@ sub serialize {
 			my $result1 = store \%state, $file; # old method
 		} else {
 			$file .= '.yml' unless $file =~ /\.yml$/;
+			rmap_array { $_ = q(~) if ! scalar @$_ } \%state;
+			rmap_hash  { $_ = q(~) if ! scalar %$_ } \%state;
+			rmap       { $_ = q(~) if !         $_ } \%state;
 			my $yaml = yaml_out(\%state);
 			$yaml > io($file);
 			$debug and print $yaml;
@@ -286,7 +292,7 @@ sub yaml_out {
 	croak "attempting to code wrong data type: $type"
 		if $type !~ /HASH|ARRAY/;
 	my $output;
-	$debug and print join $/, keys %$data_ref, $/;
+	#$debug and print join $/, keys %$data_ref, $/;
 	$debug and print "about to write YAML as string\n";
     $yw->write( $data_ref, \$output ) if $type =~ /HASH|ARRAY/;
 	$output;
@@ -303,7 +309,7 @@ sub yaml_in {
 		$debug and print "assuming yaml text input\n";
 		$yaml = $file;
 	}
-	$yr->read( $yaml ); # returns ref
+	eval q[$yr->read( $yaml )]  or croak "yaml read failed: $@" ; # returns ref
 }
 
 ## support functions
