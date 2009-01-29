@@ -23,7 +23,7 @@ no warnings qw(uninitialized syntax);
 
 BEGIN{ 
 
-our $VERSION = '0.995';
+our $VERSION = '0.9951';
 
 print <<BANNER;
 
@@ -400,8 +400,9 @@ our (
 	$preview,       # am running engine with rec_file disabled
 	$use_group_numbering, # same version number for tracks recorded together
 	$unique_inputs_only,  # exclude tracks sharing same source
-	@excluded,      # tracks sharing source with other tracks,
+	%excluded,      # tracks sharing source with other tracks,
 	                # after the first
+	$memoize,       # do I cache this_wav_dir?
 
 );
  
@@ -449,6 +450,7 @@ our (
 						@loop_endpoints
 						$length
 						%bunch
+						$memoize
 						);
 					 
 @effects_static_vars = qw(
@@ -520,6 +522,7 @@ $prompt = "nama ('h' for help)> ";
 $use_pager = 1;
 $use_placeholders = 1;
 $jack_running = jack_running(); # to be updated by Event
+$memoize = 0;
 
 
 ## Load my modules
@@ -529,6 +532,11 @@ use Audio::Ecasound::Multitrack::Tkeca_effects;
 use Audio::Ecasound::Multitrack::Track;
 use Audio::Ecasound::Multitrack::Bus;    
 use Audio::Ecasound::Multitrack::Mark;
+use Audio::Ecasound::Multitrack::Wav;
+
+package Audio::Ecasound::Multitrack::Wav;
+memoize('candidates') if $Audio::Ecasound::Multitrack::memoize;
+package Audio::Ecasound::Multitrack;
 
 # aliases for concise access
 
@@ -906,7 +914,7 @@ sub load_project {
 	initialize_rules();
 	initialize_project_data();
 	remove_small_wavs(); 
-	rememoize(); # cache directory contents
+	rememoize();
 
 	retrieve_state( $h{settings} ? $h{settings} : $state_store_file) unless $opts{m} ;
 	$opts{m} = 0; # enable 
@@ -1672,7 +1680,6 @@ sub new_engine {
 }
 sub generate_setup { # create chain setup
 	$debug2 and print "&generate_setup\n";
-	remove_small_wavs();
 	%inputs = %outputs 
 			= %post_input 
 			= %pre_output 
@@ -1681,22 +1688,23 @@ sub generate_setup { # create chain setup
 			= ();
 	
 
+	# doodle mode
 	# exclude tracks sharing inputs with previous tracks
-	
 	if ( $unique_inputs_only ){
 		my @user = $tracker->tracks; # track names
-		@excluded = ();
+		%excluded = ();
 		my %already_used;
 		map{ my $source = $tn{$_}->source; 
 			if( $already_used{$source}  ){
-				push @excluded, $_;
+				$excluded{$_} = $tn{$_}->rec_status();
 			}
 			$already_used{$source}++
-		} @user;
-		if ( @excluded ){
+		 } @user;
+		if ( keys %excluded ){
 			print "Multiple tracks share same inputs.\n";
-			print "Excluding the following: @excluded\n";
-			map{ $tn{$_}->set(rw => 'OFF') } @excluded;
+			print "Excluding the following tracks: ", 
+				join(" ", keys %excluded), "\n";
+			map{ $tn{$_}->set(rw => 'OFF') } keys %excluded;
 		}
 	}
 		
@@ -1728,12 +1736,12 @@ sub arm {
 		$preview = 0;
 		$rec_file->set(status => 1);
 		$mon_setup->set(status => 1);
+		my @excluded = keys %excluded;
 		if ( @excluded ){
 			print "Re-enabling the following tracks: @excluded\n";
-			map{ $tn{$_}->set(rw => 'REC') } @excluded;
+			map{ $tn{$_}->set(rw => $excluded{$_}) } @excluded;
 		}
 		$unique_inputs_only = 0;
-			
 	}
 	generate_setup() and connect_transport(); 
 }
@@ -1977,6 +1985,7 @@ sub jump {
 ## post-recording functions
 
 sub rememoize {
+	return unless $memoize;
 	package Audio::Ecasound::Multitrack::Wav;
 	unmemoize('candidates');
 	memoize(  'candidates');
@@ -1988,7 +1997,6 @@ sub rec_cleanup {
  	my @k = really_recording();
 	$debug and print "intended recordings: " , join $/, @k;
 	return unless @k;
-	rememoize();
 	print "I was recording!\n";
 	my $recorded = 0;
  	for my $k (@k) {    
@@ -2012,12 +2020,12 @@ sub rec_cleanup {
 			else { unlink $test_wav }
 		}
 	}
+	rememoize();
 	my $mixed = scalar ( grep{ /\bmix*.wav/i} @k );
 	
 	$debug and print "recorded: $recorded mixed: $mixed\n";
 	if ( ($recorded -  $mixed) >= 1) {
 			# i.e. there are first time recorded tracks
-			#$ui->update_master_version_button();
 			$ui->global_version_buttons(); # recreate
 			$tracker->set( rw => 'MON');
 			generate_setup() and connect_transport();
@@ -5598,6 +5606,9 @@ set_version:
   smry: select track version
   parameters: number
   example: sax; version 5; sh
+destroy_current_wav:
+  type: track
+  what: unlink $track->full_path
 group_rec:
   type: group
   short: grec R
@@ -5918,6 +5929,12 @@ fixdc:
   type: track
   what: apply ecafixdc to current track version
   short: ecafixdc
+memoize:
+  type: general
+  what: enable WAV dir cache
+unmemoize:
+  type: general
+  what: disable WAV dir cache
 ...
 
 YML
@@ -6692,6 +6709,27 @@ preview: _preview { Audio::Ecasound::Multitrack::preview(); 1}
 doodle: _doodle { Audio::Ecasound::Multitrack::doodle(); 1 }
 normalize: _normalize { $Audio::Ecasound::Multitrack::this_track->normalize; 1}
 fixdc: _fixdc { $Audio::Ecasound::Multitrack::this_track->fixdc; 1}
+destroy_current_wav: _destroy_current_wav { 
+	my $wav = $Audio::Ecasound::Multitrack::this_track->full_path;
+	print "delete WAV file $wav? [n] ";
+	my $reply = <STDIN>;
+	if ( $reply =~ /y/i ){
+		print "Unlinking.\n";
+		unlink $wav or warn "couldn't unlink $wav: $!\n";
+		Audio::Ecasound::Multitrack::rememoize();
+	}
+	1;
+}
+memoize: _memoize { 
+	package Audio::Ecasound::Multitrack::Wav;
+	$Audio::Ecasound::Multitrack::memoize = 1;
+	memoize('candidates'); 1
+}
+unmemoize: _unmemoize {
+	package Audio::Ecasound::Multitrack::Wav;
+	$Audio::Ecasound::Multitrack::memoize = 0;
+	unmemoize('candidates'); 1
+}
 
 
 command: add_ctrl
@@ -6706,6 +6744,7 @@ command: bunch
 command: connect
 command: create_project
 command: ctrl_register
+command: destroy_current_wav
 command: disconnect
 command: doodle
 command: dump_all
@@ -6740,6 +6779,7 @@ command: loop_disable
 command: loop_enable
 command: loop_show
 command: mark
+command: memoize
 command: midi_inputs
 command: mixdown
 command: mixoff
@@ -6788,6 +6828,7 @@ command: stereo
 command: stop
 command: to_mark
 command: unity
+command: unmemoize
 command: unmute
 command: vol
 _add_ctrl: /add_ctrl\b/ | /acl\b/
@@ -6802,6 +6843,7 @@ _bunch: /bunch\b/ | /bn\b/
 _connect: /connect\b/ | /con\b/
 _create_project: /create_project\b/ | /create\b/
 _ctrl_register: /ctrl_register\b/ | /crg\b/
+_destroy_current_wav: /destroy_current_wav\b/
 _disconnect: /disconnect\b/ | /dcon\b/
 _doodle: /doodle\b/
 _dump_all: /dump_all\b/ | /dumpall\b/ | /dumpa\b/
@@ -6836,6 +6878,7 @@ _loop_disable: /loop_disable\b/ | /noloop\b/ | /nl\b/
 _loop_enable: /loop_enable\b/ | /loop\b/
 _loop_show: /loop_show\b/ | /ls\b/
 _mark: /mark\b/ | /k\b/
+_memoize: /memoize\b/
 _midi_inputs: /midi_inputs\b/ | /midi\b/
 _mixdown: /mixdown\b/ | /mxd\b/
 _mixoff: /mixoff\b/ | /mxo\b/
@@ -6884,6 +6927,7 @@ _stereo: /stereo\b/
 _stop: /stop\b/ | /s\b/
 _to_mark: /to_mark\b/ | /tom\b/
 _unity: /unity\b/
+_unmemoize: /unmemoize\b/
 _unmute: /unmute\b/ | /cc\b/ | /uncut\b/
 _vol: /vol\b/ | /v\b/
 add_ctrl: _add_ctrl end { 1 }
@@ -6898,6 +6942,7 @@ bunch: _bunch end { 1 }
 connect: _connect end { 1 }
 create_project: _create_project end { 1 }
 ctrl_register: _ctrl_register end { 1 }
+destroy_current_wav: _destroy_current_wav end { 1 }
 disconnect: _disconnect end { 1 }
 doodle: _doodle end { 1 }
 dump_all: _dump_all end { 1 }
@@ -6932,6 +6977,7 @@ loop_disable: _loop_disable end { 1 }
 loop_enable: _loop_enable end { 1 }
 loop_show: _loop_show end { 1 }
 mark: _mark end { 1 }
+memoize: _memoize end { 1 }
 midi_inputs: _midi_inputs end { 1 }
 mixdown: _mixdown end { 1 }
 mixoff: _mixoff end { 1 }
@@ -6980,6 +7026,7 @@ stereo: _stereo end { 1 }
 stop: _stop end { 1 }
 to_mark: _to_mark end { 1 }
 unity: _unity end { 1 }
+unmemoize: _unmemoize end { 1 }
 unmute: _unmute end { 1 }
 vol: _vol end { 1 }
 );
@@ -7132,7 +7179,15 @@ transport => <<TRANSPORT,
    noloop, nl         -  disable looping
 
    preview            -  start engine with WAV recording disabled
-                         (for mic check, etc.)
+                         (for mic check, etc.) Release with
+                         stop/arm.
+
+   doodle             -  start engine with live inputs only.
+                         Like preview but MON tracks are
+                         excluded, as are REC tracks with
+						 identical sources. Release with
+                         stop/arm.
+                         
 TRANSPORT
 
 marks => <<MARKS,

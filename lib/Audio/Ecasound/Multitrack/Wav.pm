@@ -7,7 +7,6 @@ use Audio::Ecasound::Multitrack::Assign qw(:all);
 use Memoize qw(memoize unmemoize);
 no warnings qw(uninitialized);
 use Carp;
-memoize('candidates');
 
 sub get_versions {
 	$Audio::Ecasound::Multitrack::debug2 and print "&get_versions\n";

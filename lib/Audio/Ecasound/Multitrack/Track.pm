@@ -13,7 +13,6 @@ use Audio::Ecasound::Multitrack::Assign qw(join_path);
 use Carp;
 use IO::All;
 use vars qw($n %by_name @by_index %track_names);
-use Audio::Ecasound::Multitrack::Wav;
 our @ISA = 'Audio::Ecasound::Multitrack::Wav';
 $n = 0; 	# incrementing numeric key
 @by_index = ();	# return ref to Track by numeric key
@@ -283,8 +282,8 @@ sub rec_status {
 		or $track->rw eq 'OFF'
 		or $track->rw eq 'MON' and ! $monitor_version
 #		or $track->hide
-  		or $client
-  			and ! Audio::Ecasound::Multitrack::jack_client($client,q(output)) 
+#  		or $client
+#  			and ! Audio::Ecasound::Multitrack::jack_client($client,q(output)) 
 		# ! $track->full_path;
 		;
 	if( 	
