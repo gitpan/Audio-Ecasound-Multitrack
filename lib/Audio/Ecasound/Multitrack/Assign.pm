@@ -10,6 +10,7 @@ use Data::YAML;
 use Data::YAML::Reader;
 use Data::YAML::Writer;
 use Data::Rmap qw(:all);
+#use Data::Dump qw(dump);
 use Storable;
 
 require Exporter;
@@ -61,25 +62,24 @@ use Carp;
 
 sub assign {
 	
-	
 	$debug2 and print "&assign\n";
 	
 	my %h = @_; # parameters appear in %h
 	my $class;
-	carp "didn't expect scalar here" if ref $h{-data} eq 'SCALAR';
-	carp "didn't expect code here" if ref $h{-data} eq 'CODE';
-	# print "data: $h{-data}, ", ref $h{-data}, $/;
+	carp "didn't expect scalar here" if ref $h{data} eq 'SCALAR';
+	carp "didn't expect code here" if ref $h{data} eq 'CODE';
+	# print "data: $h{data}, ", ref $h{data}, $/;
 
-	if ( ref $h{-data} !~ /^(HASH|ARRAY|CODE|GLOB|HANDLE|FORMAT)$/){
+	if ( ref $h{data} !~ /^(HASH|ARRAY|CODE|GLOB|HANDLE|FORMAT)$/){
 		# we guess object
-		$class = ref $h{-data}; 
+		$class = ref $h{data}; 
 		$debug and print "I found an object of class $class...\n";
 	} 
-	$class = $h{-class};
+	$class = $h{class};
  	$class .= "\:\:" unless $class =~ /\:\:$/;; # backslashes protect
 												#from preprocessor
-	my @vars = @{ $h{-vars} };
-	my $ref = $h{-data};
+	my @vars = @{ $h{vars} };
+	my $ref = $h{data};
 	my $type = ref $ref;
 	$debug and print <<ASSIGN;
 	data type: $type
@@ -114,51 +114,47 @@ key:             $key
 full_class_path: $full_class_path
 sigil{key}:      $sigil{$key}
 DEBUG
-		if ($debug){
-		 $sigil{$key} 
-		or carp "didn't find a match for $key in ", join " ", @vars, $/;
-		}
-		my ($sigil, $identifier) = ($sigil{$key}, $key);
-		$eval .= $full_class_path;
-		$eval .= q( = );
+		if ( ! $sigil{$key} ){
+			$debug and carp 
+			"didn't find a match for $key in ", join " ", @vars, $/;
+		} else {
+			my ($sigil, $identifier) = ($sigil{$key}, $key);
+			$eval .= $full_class_path;
+			$eval .= q( = );
 
-		my $val;
+			my $val = $ref->{$identifier};
 
-		if ($sigil eq '$') { # scalar assignment
+			if ($sigil eq '$') { # scalar assignment
 
-			# extract value
+				# extract value
 
-			if ($ref->{$identifier}) { #  if we have something,
+				if ($val) { #  if we have something,
 
- 				# take it
-				
-				$val = $ref->{$identifier};
+					# dereference it if needed
+					
+					ref $val eq q(SCALAR) and $val = $$val; 
+															
+					# quoting for non-numerical
+					
+					$val = qq("$val") unless  $val =~ /^[\d\.,+\-e]+$/ 
+			
+				} else { $val = q(undef) }; # or set as undefined
 
-				# dereference it if needed
-				
-				ref $val eq q(SCALAR) and $val = $$val; 
-				ref $val eq q(SCALAR) and $val = $$val; 
-														
-				# quoting for non-numerical
-				
-				$val = qq("$val") unless  $val =~ /^[\d\.,+\-e]+$/ 
-					#or 		ref $val;
-		
-			} else { $val = q(undef) }; # or set as undefined
+				$eval .=  $val;  # append to assignment
 
-			$eval .=  $val;  # append to assignment
+			} else { # array, hash assignment
+					
 
-		} else { # array, hash assignment
-
-			$eval .= qq($sigil\{);
-			$eval .= q($ref->{ );
-			$eval .= qq("$identifier");
-			$eval .= q( } );
-			$eval .= q( } );
-		}
-		$debug and print $eval, $/, $/;
-		eval($eval);
-		$debug and $@ and carp "failed to eval $eval: $@\n";
+				$eval .= qq($sigil\{);
+				$eval .= q($ref->{ );
+				$eval .= qq("$identifier");
+				$eval .= q( } );
+				$eval .= q( } );
+			}
+			$debug and print $eval, $/, $/;
+			eval($eval);
+			$debug and $@ and carp "failed to eval $eval: $@\n";
+		}  # end if sigil{key}
 	} @keys;
 	1;
 }
@@ -167,9 +163,10 @@ sub assign_vars {
 	$debug2 and print "&assign_vars\n";
 	
 	my %h = @_;
-	my $source = $h{-source};
-	my @vars = @{ $h{-vars} };
-	my $class = $h{-class};
+	my $source = $h{source};
+	my @vars = @{ $h{vars} };
+	my $class = $h{class};
+	my $format = $h{format};
 	# assigns vars in @var_list to values from $source
 	# $source can be a :
 	#      - filename or
@@ -183,45 +180,55 @@ sub assign_vars {
 
 ### figure out what to do with input
 
-	$source !~ /.yml$/i and -f $source 
-		and $ref = retrieve($source) # Storable
-		#and $debug and print ("found Storable file: $source\n")
+	if ($source !~ /\n/ and -f $source){
+		if ( $source =~ /\.yml$/i or $format eq 'yaml'){
+				$debug and print "found a yaml file: $source\n";
+				$ref = yaml_in($source);
+		} elsif ( $source =~ /\.pl$/i or $format eq 'perl'){
+				$debug and print "found a perl file: $source\n";
+				my $code = io($source)->all ;
+				$ref = eval $code or carp "$source: eval failed: $@\n";
+		} else {
+				$debug and print "assuming Storable file: $source\n";
+				$ref = retrieve($source) # Storable
+		}
 
-	## check for a filename
+	# check for a yaml string
+	} elsif ( $source =~ /^\s*---/s ){
+		$debug and print "found yaml text\n";
+		$ref = $yr->read($source);
 
-	or -f $source and $source =~ /.yml$/ 
-		and $ref = yaml_in($source)
-		#and $debug and print "found a yaml file: $source\n"
- 	
-	## check for a string
+	# pass a hash_ref to the assigner
+	} elsif ( ref $source ) {
+		$debug and print "found a reference\n";
+		$ref = $source;
+	} else { carp "$source: unidentified data source\n"; }
 
-	or  $source =~ /^\s*---/s 
-		and $ref = $yr->read($source)
-		#and $debug and print "found yaml as text\n"
+	# restore empty arrays and hashes where needed
+	
+	if ( $source =~ /\.yml$/i or $source =~ /^\s*---/s ){
 
-	## pass a hash_ref to the assigner
+		rmap {  $_ = [] if /~NULL_ARRAY/;
+				$_ = {} if /~NULL_HASH/   } $ref;
+	}
 
-	or ref $source 
-		and $ref = $source;
-		#and $debug and print "found a reference\n"
-
-
-	assign(-data => $ref, -vars => \@vars, -class => $class);
+	assign(data => $ref, 
+			vars => \@vars, 
+			class => $class);
 	1;	
 
 }
 
 sub serialize {
 	$debug2 and print "&serialize\n";
-	
 	my %h = @_;
-	my @vars = @{ $h{-vars} };
-	my $class = $h{-class};
-	my $file  = $h{-file};
+	my @vars = @{ $h{vars} };
+	my $class = $h{class};
+	my $file  = $h{file};
+	my $format = $h{format};
  	$class .= "\:\:" unless $class =~ /\:\:$/;; # backslashes protect from preprocessor!
 	$debug and print "file: $file, class: $class\nvariables...@vars\n";
 	my %state;
-	my $tilde = q('~');
 	map{ my ($sigil, $identifier) = /(.)([\w:]+)/; 
 
 
@@ -230,6 +237,7 @@ sub serialize {
 #
 #  all scalars must contain values, not references
 
+		#my $value =  q(\\) 
 		my $value =  ($sigil ne q($) ? q(\\) : q() ) 
 
 							. $sigil
@@ -239,21 +247,6 @@ sub serialize {
 # more YAML adjustments 
 #
 # restore will break if a null field is not converted to '~'
-=comment
-		if ( ! $h{-storable} ){ 
-			if ( $sigil eq q($) ){
-				my $val = eval( $value );
-				$value = $val ? $value : $tilde ;
-			} elsif ($sigil eq q(@) ) {
-				my $val = eval( $value );
-				$value = scalar @{ $val } ? $value : $tilde;
-			} elsif ($sigil eq q(%) ){
-				my $val = eval( $value );
-				my %val = %$val;
-				$value = %val ? $value : $tilde; 
-			}
-		}
-=cut
 			
 		 my $eval_string =  q($state{')
 							. $identifier
@@ -265,17 +258,24 @@ sub serialize {
 		"eval returned zero or failed ($@\n)";
 	} @vars;
 	# my $result1 = store \%state, $file; # old method
-	if ( $h{-file} ) {
+	if ( $h{file} ) {
 
-		if ($h{-storable}) {
+		if ($h{format} eq 'storable') {
 			my $result1 = store \%state, $file; # old method
-		} else {
+		} elsif ($h{format} eq 'perl'){
+			$file .= '.pl' unless $file =~ /\.pl$/;
+			#my $pl = dump \%state;
+			#$pl > io($file);
+		} elsif ($h{format} eq 'yaml'){
 			$file .= '.yml' unless $file =~ /\.yml$/;
-			rmap_array { $_ = q(~) if ! scalar @$_ } \%state;
-			rmap_hash  { $_ = q(~) if ! scalar %$_ } \%state;
-			rmap       { $_ = q(~) if !         $_ } \%state;
+			rmap_array { $_ = q(~NULL_ARRAY) if ! scalar @$_ } \%state;
+			rmap_hash  { $_ = q(~NULL_HASH)  if ! scalar %$_ } \%state;
+			rmap       { $_ = q(~) if ! defined           $_ } \%state;
 			my $yaml = yaml_out(\%state);
 			$yaml > io($file);
+			rmap {  $_ = [] if /~NULL_ARRAY/;
+					$_ = {} if /~NULL_HASH/;
+					$_ = undef if $_ eq '~' } \%state;
 			$debug and print $yaml;
 		}
 	} else { yaml_out(\%state) }

@@ -37,6 +37,9 @@ sub apply {
 	$debug and print "bus name: ", $bus->name, $/;
 	$debug and print "groups: ", join " ", @{$bus->groups}, $/;
 	$debug and print "rules: ", join " ", @{$bus->rules}, $/;
+
+	# get track names corresponding to this bus
+	
 	my @track_names = (@{$bus->tracks}, 
 
 		map{ $debug and print "group name: $_\n";
@@ -104,7 +107,7 @@ sub apply {
 
 sub deref_code {
 	my ($value, $track) = @_;
-	my $type = ref $value ? ref $value : "scalar";
+	my $type = ref $value || "scalar";
 	my $tracktype = ref $track;
 	#print "found type: $type, value: $value\n";
 	#print "found type: $type, tracktype: $tracktype, value: $value\n";

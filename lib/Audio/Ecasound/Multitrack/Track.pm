@@ -8,15 +8,15 @@ local $debug = 0;
 #use Exporter qw(import);
 #our @EXPORT_OK = qw(track);
 use Audio::Ecasound::Multitrack::Assign qw(join_path);
+use Audio::Ecasound::Multitrack::Wav;
 #use Memoize qw(memoize unmemoize);
 #memoize('rec_status');
 use Carp;
 use IO::All;
-use vars qw($n %by_name @by_index %track_names);
+use vars qw($n %by_name @by_index %track_names %by_index @all);
 our @ISA = 'Audio::Ecasound::Multitrack::Wav';
-$n = 0; 	# incrementing numeric key
-@by_index = ();	# return ref to Track by numeric key
-%by_name = ();	# return ref to Track by name
+
+initialize();
 
 # attributes offset, loop, delay for entire setup
 # attribute  modifiers
@@ -32,6 +32,8 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 
 						vol  
 						pan 
+						latency
+
 						old_vol_level
 						old_pan_level
 						ops 
@@ -40,10 +42,10 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 						n 
 						group 
 
+						playat
+						region_start	
+						region_end
 						
-						delay
-						start_position
-						length
 						looping
 
 						hide
@@ -53,6 +55,9 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 						jack_send
 						source_select
 						send_select
+
+						project
+						target
 						
 						);
 
@@ -60,6 +65,14 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 # ->old_volume_level is the level saved before muting
 # ->old_pan_level is the level saved before pan full right/left
 # commands
+
+sub initialize {
+	$n = 0; 	# incrementing numeric key
+	@all = ();
+	%by_index = ();	# return ref to Track by numeric key
+	%by_name = ();	# return ref to Track by name
+	%track_names = (); 
+}
 
 sub new {
 	# returns a reference to an object that is indexed by
@@ -74,18 +87,21 @@ sub new {
 	#print "test 1\n";
 	if ($by_name{$vals{name}}){
 	#print "test 2\n";
-			my $track = $by_name{$vals{name}};
-			# print $track->name, " hide: ", $track->hide, $/;
-			if ($track->hide) {
-				$track->set(hide => 0);
-				return $track;
+	my $track = $by_name{$vals{name}};
+		# print $track->}ame, " hide: ", $track->hide, $/;
+		if ($track->hide) {
+			$track->set(hide => 0);
+			return $track;
 
-			} else {
-		carp  ("track name already in use: $vals{name}\n"), return
+		} else {
+		print("track name already in use: $vals{name}\n"), return
 		 if $track_names{$vals{name}}; 
-
 		}
 	}
+	print("reserved track name: $vals{name}\n"), return
+	 if  ! $Audio::Ecasound::Multitrack::mastering_mode 
+		and grep{$vals{name} eq $_} @Audio::Ecasound::Multitrack::mastering_track_names ; 
+
 	my $n = $vals{n} ? $vals{n} : ++$n; 
 	my $object = bless { 
 
@@ -94,7 +110,7 @@ sub new {
 
 					name 	=> "Audio_$n", 
 					group	=> 'Tracker', 
-					rw   	=> 'REC', 
+		#			rw   	=> 'REC', # Audio::Ecasound::Multitrack::add_track() sets REC if necessary
 					n    	=> $n,
 					ops     => [],
 					active	=> undef,
@@ -105,15 +121,9 @@ sub new {
 					pan 	=> undef,
 
 					modifiers => q(), # start, reverse, audioloop, playat
-
 					
-					delay	=> undef, # after how long we start playback
-					                  # the term 'offset' is used already
-					start_position => undef, # where we start playback from
-					length => undef, # how long we play back
 					looping => undef, # do we repeat our sound sample
 
-					hide     => undef, # for 'Remove Track' function
 					source_select => q(soundcard),
 					send_select => undef,
 
@@ -122,11 +132,12 @@ sub new {
 	#print "object class: $class, object type: ", ref $object, $/;
 	$track_names{$vals{name}}++;
 	#print "names used: ", Audio::Ecasound::Multitrack::yaml_out( \%track_names );
-	$by_index[$n] = $object;
+	$by_index{$n} = $object;
 	$by_name{ $object->name } = $object;
-	
-	Audio::Ecasound::Multitrack::add_volume_control($n);
+	push @all, $object;
+	#Audio::Ecasound::Multitrack::add_latency_compensation($n);	
 	Audio::Ecasound::Multitrack::add_pan_control($n);
+	Audio::Ecasound::Multitrack::add_volume_control($n);
 
 	#my $group = $Audio::Ecasound::Multitrack::Group::by_name{ $object->group }; 
 
@@ -140,7 +151,17 @@ sub new {
 }
 
 
-sub dir { Audio::Ecasound::Multitrack::this_wav_dir() } # replaces dir field
+sub dir {
+	my $self = shift;
+	 $self->project  
+		? join_path(Audio::Ecasound::Multitrack::project_root(), $self->project, '.wav')
+		: Audio::Ecasound::Multitrack::this_wav_dir();
+}
+
+sub basename {
+	my $self = shift;
+	$self->target || $self->name
+}
 
 sub full_path { my $track = shift; join_path $track->dir , $track->current }
 
@@ -148,17 +169,7 @@ sub group_last {
 	my $track = shift;
 	my $group = $Audio::Ecasound::Multitrack::Group::by_name{$track->group}; 
 	#print join " ", 'searching tracks:', $group->tracks, $/;
-	my $max = 0;
-	map{ 
-		my $track = $_;
-		my $last;
-		$last = $track->last ? $track->last : 0;
-		#print "track: ", $track->name, ", last: $last\n";
-
-		$max = $last if $last > $max;
-
-	}	map { $by_name{$_} } $group->tracks;
-	$max;
+	$group->last;
 }
 
 sub current {	 # depends on ewf status
@@ -166,29 +177,13 @@ sub current {	 # depends on ewf status
 	my $last = $track->current_version;
 	#print "last found is $last\n"; 
 	if 	($track->rec_status eq 'REC'){ 
-		return $track->name . '_' . $last . '.wav'}
-	elsif ( $track->rec_status eq 'MON'){ 
-
-	# here comes the logic that enables .ewf support, 
-	# using conditional $track->delay or $track->length or $track->start_position ;
-	# to decide whether to rewrite file name from .wav to .ewf
-	
-		no warnings;
+		$track->name . '_' . $last . '.wav'
+	} elsif ( $track->rec_status eq 'MON'){ 
 		my $filename = $track->targets->{ $track->monitor_version } ;
-		use warnings;
-		return $filename  # setup directly refers to .wav file
-		  unless $track->delay or $track->length or $track->start_position ;
-
-		  # setup uses .ewf parameters, expects .ewf file to
-		  # be written
-
-		#filename in chain setup now point to .ewf file instead of .wav
-		
-		$filename =~ s/\.wav$/.ewf/;
-		return $filename;
+		$filename
 	} else {
 		$debug and print "track ", $track->name, ": no current version\n" ;
-		return undef;
+		undef; 
 	}
 }
 
@@ -263,44 +258,61 @@ sub monitor_version {
 # 	$track->active ? $track->active : $track->last;
 # }
 
-sub jack_client {
-	my $track = shift;
-	my $client = $track->source;
-	$client if $client =~ /\D/; 
-}
-	
 sub rec_status {
-	$Audio::Ecasound::Multitrack::debug2 and print "&rec_status\n";
+#	$Audio::Ecasound::Multitrack::debug2 and print "&rec_status\n";
 	my $track = shift;
 	my $monitor_version = $track->monitor_version;
-	# print "rec status track: ", $track->name, $/;
+	my $source = $track->source;
+
+	# support doodle mode
+#	return 'REC' if $Audio::Ecasound::Multitrack::preview eq 'doodle' and $source and
+#		grep { $track->name eq $_ } $Audio::Ecasound::Multitrack::tracker->tracks;
+
 	my $group = $Audio::Ecasound::Multitrack::Group::by_name{$track->group};
-	my $client = $track->jack_client;
+	$debug and print "rec status track: ", $track->name, 
+		" group: $group, source: $source, monitor version: $monitor_version\n";
 
-	return 'OFF' if 
-		$group->rw eq 'OFF'
+	if ( $group->rw eq 'OFF'
 		or $track->rw eq 'OFF'
-		or $track->rw eq 'MON' and ! $monitor_version
-#		or $track->hide
-#  		or $client
-#  			and ! Audio::Ecasound::Multitrack::jack_client($client,q(output)) 
+		or $track->rw eq 'MON' and ! $monitor_version 
+		or $track->hide 
 		# ! $track->full_path;
-		;
-	if( 	
-		$track->rw eq 'REC'
-		 and $group->rw eq 'REC'
-		) {
+		
+	){ 				  'OFF' }
 
-		return 'REC'; # if $track->ch_r;
-		#return 'MON' if $monitor_version;
-		#return 'OFF';
+	# When we reach here, $group->rw and $track->rw are REC or MON
+	# so the result will be REC or MON if conditions are met
+
+	# first case, possible REC status
+	
+	elsif (	$track->rw eq 'REC' 
+				and $group->rw eq 'REC') {
+
+		if ( $source =~ /\D/ ){ # jack client
+				Audio::Ecasound::Multitrack::jack_client($source,'output')
+					?  'REC'
+					:  maybe_monitor($monitor_version)
+		} elsif ( $source =~ /\d/ ){ # soundcard channel
+					   'REC'
+		} else { 	  maybe_monitor($monitor_version)  }
+		
+			
 	}
-	else { return 'MON' if $monitor_version;
-			return 'OFF';	
+	# second case, possible MON status
+	
+	else { 			maybe_monitor($monitor_version)
+
 	}
 }
+
+sub maybe_monitor {
+	my $monitor_version = shift;
+	return 'MON' if $monitor_version and $Audio::Ecasound::Multitrack::mon_setup->status;
+	return 'OFF';
+}
+
 # the following methods handle effects
-sub remove_effect {
+sub remove_effect { # doesn't touch %cops or %copp data structures 
 	my $track = shift;
 	my @ids = @_;
 	$track->set(ops => [ grep { my $existing = $_; 
@@ -314,14 +326,18 @@ sub remove_effect {
 sub mono_to_stereo { 
 	my $track = shift;
 	my $cmd = "file " .  $track->full_path;
-	if ( 	$track->ch_count == 2
+	if ( 	$track->ch_count == 2 and $track->rec_status eq 'REC'
 		    or  -e $track->full_path
 				and qx(which file)
 				and qx($cmd) =~ /stereo/i ){ 
-		return "" 
-	} elsif ( $track->ch_count == 1 ){
+		return q(); 
+	} elsif ( $track->ch_count == 1 and $track->rec_status eq 'REC'
+				or  -e $track->full_path
+				and qx(which file)
+				and qx($cmd) =~ /mono/i ){ 
 		return " -chcopy:1,2 " 
-	} else { carp "Track ".$track->name.": Unexpected channel count\n"; }
+	} else { # do nothing for higher channel counts
+	} # carp "Track ".$track->name.": Unexpected channel count\n"; 
 }
 
 sub rec_route {
@@ -370,36 +386,51 @@ sub pre_send {
 	route(2,$track->aux_output); # stereo signal
 }
 
-# The following subroutine is not an object method.
+sub remove {
+	my $track = shift;
+#	$Audio::Ecasound::Multitrack::ui->remove_track_gui($track->n); TODO
+	map{ Audio::Ecasound::Multitrack::remove_effect($_) } @{ $track->ops };
+	delete $by_index{$track->n};
+	delete $by_name{$track->name};
+	@all = grep{ $_->n != $track->n} @all;
+}
 
-sub all { @by_index[1..scalar @by_index - 1] }
 
+# The following two subroutines are not object methods.
+
+sub all { @all }
+
+sub user {
+	map{$_->name} grep{ $_->name ne 'Master' and $_->name ne 'Mixdown' } @all
+}
+	
 
 ### Commands and their support functions
 
+# Around 200 lines of conditional code to allow user to use 'source'
+# and 'send' commands in JACK and ALSA modes.
+
 sub source { # command for setting, showing track source
 	my ($track, $source) = @_;
-
 	if ( ! $source ){
-		if ( $Audio::Ecasound::Multitrack::jack_running
-				and $track->jack_source 
-				and $track->source_select eq 'jack'){
-			$track->jack_source 
-		} else { 
+		if ( 	$track->source_select eq 'jack'
+				and $track->jack_source ){
+			$track->jack_source
+		} elsif ( $track->source_select eq 'soundcard') { 
 			$track->input 
-		}
+		} else { undef }
 	} elsif ( $source =~ m(\D) ){
 		if ( $Audio::Ecasound::Multitrack::jack_running ){
-			$track->set(jack_source => $source);
 			$track->set(source_select => "jack");
+			$track->set(jack_source => $source);
 			my $name = $track->name;
 			print <<CLIENT if ! Audio::Ecasound::Multitrack::jack_client($source, 'output');
-JACK client "$source" is not found, track "$name" is OFF
+$name: output port for JACK client "$source" not found. 
+Cannot set "$name" to REC.
 CLIENT
-			$track->jack_source
 		} else {
 			print "JACK server not running.\n";
-			$track->input;
+			$track->source;
 		} 
 	} else {  # must be numerical
 		$track->set(ch_r => $source);
@@ -455,15 +486,10 @@ sub set_send {
 sub send {
 	my ($track, $send) = @_;
 	if ( ! defined $send ){
-		if ( $Audio::Ecasound::Multitrack::jack_running
-				and $track->jack_send 
-				and $track->send_select eq 'jack'){
-			$track->jack_send 
-		} else { 
-			$track->send_select eq 'soundcard'
-				?  $track->aux_output
-				:  undef
-		}
+		if ( $track->send_select eq 'jack'
+			 and $track->jack_send  ) { $track->jack_send } 
+		elsif ( $track->send_select eq 'soundcard' ){ $track->aux_output }
+		else { undef }
 	} elsif ( $send eq 'off'  or $send eq '0') { 
 		$track->set(send_select => 'off');
 		undef;
@@ -475,7 +501,7 @@ sub send {
 		} else {
 			print $track->name, 
 			": cannot send to JACK client. jackd is not running\n";
-			$track->aux_output;
+			$track->source;
 		} 
 	} else {  # must be numerical
 		if ( $send > 2){ 
@@ -510,7 +536,7 @@ Skipping.
 			[qw(skip skip)]; 
 		}
 	} else { 
-				q(: unexpected send_select value: "), 
+				print q(: unexpected send_select value: "), 
 				$track->send_select, qq("\n);
 			[qw(skip skip)]; 
 	}
@@ -525,7 +551,7 @@ sub source_input { # for io lists / chain setup
 		if ($Audio::Ecasound::Multitrack::jack_running ){
 			['jack', $track->source ]
 		} else { 
-			print $track->name, ": no JACK client found\n";
+			#print $track->name, ": no JACK client found\n";
 			[qw(lost lost)]
 		}
     } else { 
@@ -550,9 +576,11 @@ sub aux_output {
 
 sub input_object { # for text display
 	my $source = shift; # string
-	$source =~ /\D/ 
-		? qq(JACK client "$source")
-		: qq(soundcard channel $source);
+	if ( $source =~ /\D/ ){
+		qq(JACK client "$source")
+	} elsif ( $source =~ /\d/ ){
+		qq(soundcard channel $source)
+	} 
 }
 
 sub output_object {   # text for user display
@@ -563,9 +591,39 @@ sub output_object {   # text for user display
 		? qq(JACK client "$send")
 		: qq(soundcard channel $send);
 }
+sub client_status {
+	my ($track_status, $client, $direction) = @_;
+	if ($client =~ /\D/){
+		if(Audio::Ecasound::Multitrack::jack_client($client, $direction) and $track_status eq 'REC' )
+			{ $client }
+		else { "[$client]" }
+	} elsif ($client =~ /\d+/ ){ 
+		if ( $track_status eq 'REC'){ $client }
+		else { "[$client]" }
+	} else { q() }
+}
+sub source_status {
+	my $track = shift;
+	return if (ref $track) =~ /MasteringTrack/;
+	client_status($track->rec_status, $track->source, 'output')
+}
+sub send_status {
+	my $track = shift;
+	client_status('REC', $track->send, 'input')
+}
 
 sub set_rec {
 	my $track = shift;
+	if (my $t = $track->target){
+		my  $msg  = $track->name;
+			$msg .= qq( is an alias to track "$t");
+			$msg .=  q( in project ") . $track->project . q(") 
+				if $track->project;
+			$msg .= qq(.\n);
+			$msg .= "Can't set a track alias to REC.\n";
+		print $msg;
+		return;
+	}
 	$track->set(rw => 'REC');
 	$track->rec_status eq 'REC'	or print $track->name, 
 		": set to REC, but current status is ", $track->rec_status, "\n";
@@ -606,12 +664,85 @@ sub fixdc {
 	print "executing: $cmd\n";
 	system $cmd;
 }
+sub mute {
+	package Audio::Ecasound::Multitrack;
+	my $track = shift;
+	my $nofade = shift;
+	$track or $track = $Audio::Ecasound::Multitrack::this_track;
+	# do nothing if already muted
+	return if $track->old_vol_level();
 
-	
-	
+	# mute if non-zero volume
+	if ( $Audio::Ecasound::Multitrack::copp{$track->vol}[0]){   
+		$track->set(old_vol_level => $Audio::Ecasound::Multitrack::copp{$track->vol}[0]);
+		if ( $nofade ){ 
+			effect_update_copp_set( $track->vol, 0, 0  );
+		} else { 
+			fadeout( $track->vol );
+		}
+	}
+}
+sub unmute {
+	package Audio::Ecasound::Multitrack;
+	my $track = shift;
+	my $nofade = shift;
+	$track or $track = $Audio::Ecasound::Multitrack::this_track;
 
+	# do nothing if we are not muted
+#	return if $Audio::Ecasound::Multitrack::copp{$track->vol}[0]; 
+	return if ! $track->old_vol_level;
+
+	if ( $nofade ){ 
+		effect_update_copp_set($track->vol, 0, $track->old_vol_level);
+	} else { 
+		fadein( $track->vol, $track->old_vol_level);
+	}
+	$track->set(old_vol_level => 0);
+}
+
+sub ingest  {
+	my $track = shift;
+	my ($path, $frequency) = @_;
+	my $version  = ${ $track->versions }[-1] + 1;
+	if ( ! -r $path ){
+		print "$path: non-existent or unreadable file. No action.\n";
+		return;
+	} else {
+		my $type = qx(file $path);
+		my $channels;
+		if ($type =~ /mono/i){
+			$channels = 1;
+		} elsif ($type =~ /stereo/i){
+			$channels = 2;
+		} else {
+			print "$path: unknown channel count. Assuming mono. \n";
+			$channels = 1;
+		}
+	my $format = Audio::Ecasound::Multitrack::signal_format($Audio::Ecasound::Multitrack::raw_to_disk_format, $channels);
+	my $cmd = qq(ecasound -f:$format -i:resample-hq,$frequency,$path -o:).
+		join_path(Audio::Ecasound::Multitrack::this_wav_dir(),$track->name."_$version.wav\n");
+		print $cmd;
+		system $cmd or print "error: $!\n";
+	} 
+}
+
+sub playat_output {
+	my $track = shift;
+	if ( $track->playat ){
+		"playat" , Audio::Ecasound::Multitrack::Mark::mark_time($track->playat)
+	}
+}
+
+sub select_output {
+	my $track = shift;
+	if ( $track->region_start and $track->region_end){
+		my $end = Audio::Ecasound::Multitrack::Mark::mark_time($track->region_end);
+		my $start = Audio::Ecasound::Multitrack::Mark::mark_time($track->region_start);
+		my $length = $end - $start;
+		"select", $start, $length
+	}
+}
 # subclass
-
 
 package Audio::Ecasound::Multitrack::SimpleTrack; # used for Master track
 our @ISA = 'Audio::Ecasound::Multitrack::Track';
@@ -626,6 +757,8 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 
 						vol  
 						pan 
+						latency
+
 						old_vol_level
 						old_pan_level
 						ops 
@@ -634,10 +767,10 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 						n 
 						group 
 
+						playat
+						region_start
+						region_end
 						
-						delay
-						start_position
-						length
 						looping
 
 						hide
@@ -652,6 +785,7 @@ use Audio::Ecasound::Multitrack::Object qw( 		name
 
 sub rec_status{
 
+#	$Audio::Ecasound::Multitrack::debug2 and print "&rec_status (SimpleTrack)\n";
 	my $track = shift;
 	return 'MON' unless $track->rw eq 'OFF';
 	'OFF';
@@ -664,6 +798,54 @@ sub ch_r {
 }
 use warnings;
 
+package Audio::Ecasound::Multitrack::MasteringTrack; # used for mastering chains 
+our @ISA = 'Audio::Ecasound::Multitrack::SimpleTrack';
+use Audio::Ecasound::Multitrack::Object qw( 		name
+						active
+
+						ch_r 
+						ch_m 
+						ch_count
+						
+						rw
+
+						vol  
+						pan 
+						latency
+
+						old_vol_level
+						old_pan_level
+						ops 
+						offset 
+
+						n 
+						group 
+
+						playat
+						region_start
+						region_end
+						
+						looping
+
+						hide
+						modifiers
+
+						jack_source
+						jack_send
+						source_select
+						send_select
+						
+						);
+
+sub rec_status{
+	my $track = shift;
+	$Audio::Ecasound::Multitrack::mastering_mode ? 'MON' :  'OFF';
+}
+no warnings;
+sub group_last {0}
+sub version {0}
+sub monitor_version {0}
+use warnings;
 
 
 
@@ -676,15 +858,19 @@ our $VERSION = 1.0;
 use Carp;
 use vars qw(%by_name @by_index $n);
 our @ISA;
-$n = 0; 
-@by_index = ();
-%by_name = ();
+initialize();
 
 use Audio::Ecasound::Multitrack::Object qw( 	name
 					rw
 					version 
 					n	
 					);
+
+sub initialize {
+	$n = 0; 
+	@by_index = ();
+	%by_name = ();
+}
 
 sub new {
 
@@ -721,6 +907,21 @@ sub tracks { # returns list of track names in group
 	my @all = Audio::Ecasound::Multitrack::Track::all;
 	# map {print "type: ", ref $_, $/} Audio::Ecasound::Multitrack::Track::all; 
 	map{ $_->name } grep{ $_->group eq $group->name } Audio::Ecasound::Multitrack::Track::all();
+}
+
+sub last {
+	my $group = shift;
+	my $max = 0;
+	map{ 
+		my $track = $_;
+		my $last;
+		$last = $track->last || 0;
+		#print "track: ", $track->name, ", last: $last\n";
+
+		$max = $last if $last > $max;
+
+	}	map { $Audio::Ecasound::Multitrack::Track::by_name{$_} } $group->tracks;
+	$max;
 }
 
 
