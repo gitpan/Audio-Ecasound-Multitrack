@@ -202,7 +202,6 @@ our (
 
 	@global_version_buttons, # to set the same version for
 						  	#	all tracks
-	%marks, 		# the actual times # TODO REMOVE
 	$markers_armed, # set true to enable removing a mark
 	$mark_remove,   # a button that sets $markers_armed
 	$time_step,     # widget shows jump multiplier unit (seconds or minutes)
@@ -460,7 +459,6 @@ our (
 						$cop_id 		
 						%copp 			
 						%copp_exp
-						%marks			
 						$unit			
 						%oid_status		
 						%old_vol		

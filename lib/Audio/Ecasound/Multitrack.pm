@@ -33,7 +33,7 @@ no warnings qw(uninitialized syntax);
 
 BEGIN{ 
 
-our $VERSION = '0.9971';
+our $VERSION = '0.9972';
 
 print <<BANNER;
 
@@ -252,7 +252,6 @@ our (
 
 	@global_version_buttons, # to set the same version for
 						  	#	all tracks
-	%marks, 		# the actual times # TODO REMOVE
 	$markers_armed, # set true to enable removing a mark
 	$mark_remove,   # a button that sets $markers_armed
 	$time_step,     # widget shows jump multiplier unit (seconds or minutes)
@@ -510,7 +509,6 @@ our (
 						$cop_id 		
 						%copp 			
 						%copp_exp
-						%marks			
 						$unit			
 						%oid_status		
 						%old_vol		
@@ -1574,7 +1572,6 @@ sub initialize_project_data {
 	# time related
 	
 	$markers_armed = 0;
-	%marks = ();
 
 	# new Marks
 	# print "original marks\n";
@@ -3227,8 +3224,6 @@ sub prepare_static_effects_data{
 		unlink $effects_cache;
 		print "Regenerating effects data cache\n";
 	}
-	# TODO  re-read effects data if user presets are
-	# newer than cache
 
 	if (-f $effects_cache and ! $opts{s}){  
 		$debug and print "found effects cache: $effects_cache\n";
@@ -3805,8 +3800,6 @@ sub retrieve_state {
 						parent_id => $cops{$id}->{belongs_to},
 						});
 
-		# TODO if parent has a parent, i am a parameter controller controlling
-		# a parameter controller, and therefore need the -kx switch
 		}
 	} @tracks_data;
 	#print "\n---\n", $tracker->dump;  
@@ -3816,8 +3809,6 @@ sub retrieve_state {
 		(map{ ref $_, $/ } Audio::Ecasound::Multitrack::Track::all()), $/;
 
 
-
-	$ui->refresh_oids(); # unused TODO remove
 
 	# restore Alsa mixer settings
 	if ( $opts{a} ) {
@@ -6277,8 +6268,6 @@ sub t_insert_effect {
 	my $n = $cops{ $before }->{chain} or 
 		print(qq[Insertion point "$before" does not exist.  Skipping.\n]), 
 		return;
-	
-	# TODO mute if engine running
 	
 	my $track = $ti{$n};
 	$debug and print $track->name, $/;
