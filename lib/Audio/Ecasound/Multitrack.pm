@@ -33,7 +33,7 @@ no warnings qw(uninitialized syntax);
 
 BEGIN{ 
 
-our $VERSION = '0.9972';
+our $VERSION = '0.9973';
 
 print <<BANNER;
 

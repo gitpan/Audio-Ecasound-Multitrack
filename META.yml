@@ -30,4 +30,4 @@ requires:
   Time::HiRes: 0
   Tk: 0
   perl: 5.8.0
-version: 0.9972
+version: 0.9973
