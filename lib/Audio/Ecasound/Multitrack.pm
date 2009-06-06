@@ -33,7 +33,7 @@ no warnings qw(uninitialized syntax);
 
 BEGIN{ 
 
-our $VERSION = '0.9973';
+our $VERSION = '0.9974';
 
 print <<BANNER;
 
@@ -742,7 +742,7 @@ my $reply = <STDIN>;
 chomp $reply;
 if ($reply !~ /n/i){
 	$default =~ s/^project_root.*$/project_root: $ENV{HOME}\/nama/m;
-	mkpath( join_path($project_root, qw(untitled .wav)) );
+	mkpath( join_path($ENV{HOME}, qw(nama untitled .wav)) );
 } else {
 	print <<OTHER;
 Please make sure to set the project_root directory in
@@ -1589,6 +1589,7 @@ sub initialize_project_data {
 	%excluded = ();
 	$old_snapshot = {};
 	$preview = $initial_user_mode;
+	$mastering_mode = 0;
 	
 	%bunch = ();	
 	
@@ -1858,11 +1859,16 @@ sub generate_setup {
 
 		# process buses
 
+		$debug and print "applying mixdown_bus\n";
 		$mixdown_bus->apply; # Rule:  mix_file
+		$debug and print "applying master_bus bus\n";
 		$master_bus->apply;  # Rules: mix_out, mix_link
+		$debug and print "applying tracker_bus (user tracks)\n";
 		$tracker_bus->apply;
+		$debug and print "applying null_bus\n";
 		$null_bus->apply;
 		if ($mastering_mode){
+			$debug and print "applying mastering buses\n";
 			$mastering_stage1_bus->apply;
 			$mastering_stage2_bus->apply;
 			$mastering_stage3_bus->apply;
@@ -7812,7 +7818,7 @@ unmemoize: _unmemoize {
 import_audio: _import_audio path frequency end {
 	$Audio::Ecasound::Multitrack::this_track->ingest( $item{path}, $item{frequency}); 1;
 }
-import: _import path end {
+import: _import_audio path end {
 	$Audio::Ecasound::Multitrack::this_track->ingest( $item{path}, 'auto'); 1;
 }
 frequency: value
@@ -8426,7 +8432,7 @@ use_group_numbering: 1
 
 # commands to execute each time a project is loaded
 
-execute_on_project_load: doodle; start
+execute_on_project_load: show
 
 # effects for use in mastering mode
 
@@ -8808,6 +8814,9 @@ during playback only.
                                  |
                                  +------(2/Mixdown)--> Mixdown_1.wav
 
+    loop,111 --(MixLink)---> loop,222 --(1/Master)-> loop,333 -> Sound device
+                                                      |
+                                                      +->(2/Mixdown)--> Mixdown_1.wav
 =head3 Mastering Mode
 
 In mastering mode (invoked by C<master_on> and released
